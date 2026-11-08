@@ -16,7 +16,7 @@ import build_report
 import prompts as ui
 import scan_usage as su  # limit weeks and settings.json
 
-TITLE = 'claude-code-usage-weekly'
+TITLE = 'Claude Code Usage Weekly'
 SETTINGS = os.path.join(su.HERE, 'settings.json')
 RETENTION = 60  # days of transcripts to keep, so that a count every 4 weeks misses nothing
 ACTIONS = [('count', 'Count this computer'), ('build', 'Build and open the report'), ('settings', 'Settings'), ('quit', 'Quit')]
