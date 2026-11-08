@@ -12,8 +12,9 @@ that were valid in each hour, so a corrected or added price applies to every wee
 
 A week is full when every computer counted it from its start to its end. A new computer (see
 new_pc) counts as full with $0 before its first transcript. Only full weeks go into mean, band and
-trend; partly counted weeks are drawn faded. Display names of the computers can be set in
-settings.json ("computers"); several folders with the same name are added up.
+trend; partly counted weeks are drawn faded. A computer is shown by the name its week files carry
+(set on that computer), unless settings.json overrides it ("computers"); several folders with the
+same name are added up.
 """
 import collections, datetime as dt, glob, json, os, re, sys
 
@@ -94,14 +95,31 @@ def new_pc(r):
     return ts(r['data_from']) > ts(r['scanned_at']) - dt.timedelta(days=KEEP_DAYS - NEW_MARGIN_DAYS)
 
 
-def load(settings, prices):
-    labels = settings['computers']
-    now = dt.datetime.now(UTC)
-    weeks, pcs, first, skipped = {}, [], {}, []
+def week_files():
+    """(relative path, content) of every week file in data/."""
     for path in sorted(glob.glob(os.path.join(HERE, 'data', '*', '*.json'))):
         with open(path, encoding='utf-8') as fh:
-            r = json.load(fh)
-        rel = os.path.relpath(path, HERE)
+            yield os.path.relpath(path, HERE), json.load(fh)
+
+
+def computer_names(settings, files):
+    """Display name per data folder: the override in settings.json ("computers"), else the name in
+    the most recently scanned week file of the folder, else the folder name."""
+    latest = {}
+    for _, r in files:
+        if r.get('format') == su.FORMAT and r.get('name') and r['scanned_at'] >= latest.get(r['pc'], ('',))[0]:
+            latest[r['pc']] = (r['scanned_at'], r['name'])
+    folders = {r['pc'] for _, r in files if 'pc' in r}
+    overrides = settings.get('computers') or {}
+    return {pc: overrides.get(pc) or latest.get(pc, (None, pc))[1] for pc in folders}
+
+
+def load(settings, prices):
+    now = dt.datetime.now(UTC)
+    files = list(week_files())
+    labels = computer_names(settings, files)
+    weeks, pcs, first, skipped = {}, [], {}, []
+    for rel, r in files:
         if r.get('format') != su.FORMAT:
             skipped.append(f'{rel} has an older format and is skipped; count that week again with scan_usage.py')
             continue
@@ -203,6 +221,8 @@ def quota(w, total):
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='replace')  # a Windows code page cannot show every character
     try:
         settings, prices = su.load_settings(), load_prices()
     except SettingsError as e:
@@ -313,7 +333,7 @@ def main():
         if prev_spread:
             print(f"Last measurement {last_dev:+.1f} % against the weeks before, "
                   f"{'OUTSIDE' if abs(last_dev) > prev_spread else 'inside'} their spread (±{prev_spread:.1f} %)")
-        print(f'Quota $ {q_mean:.2f} on average over {len(est)} weeks, range ±{q_spread:.1f} %')
+        print(f'Quota $ {q_mean:.2f} on average over {len(est)} {"week" if len(est) == 1 else "weeks"}, range ±{q_spread:.1f} %')
     print(f'-> {out}')
 
 

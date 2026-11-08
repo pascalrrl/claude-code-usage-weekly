@@ -18,20 +18,33 @@ Everything runs locally with Python 3.9+ and the standard library; nothing is se
 ```sh
 git clone https://github.com/pascalrrl/claude-code-usage-weekly.git
 cd claude-code-usage-weekly
-python3 init.py
+python3 start.py
 ```
 
-`init.py` walks you through the setup in the terminal: it asks for your weekly reset and a name
-for this computer, writes `settings.json`, checks how long Claude Code keeps transcripts, and offers
-to count the last 30 days and open the report. On Windows, use `python` instead of `python3`.
+On Windows, use `python` instead of `python3`. The first start asks two questions in the terminal –
+your weekly reset and a name for this computer – and writes `settings.json`. After that, `start.py`
+shows a menu:
 
-Later runs:
-
-```sh
-python3 scan_usage.py      # count the weeks of the last 30 days on this computer
-python3 build_report.py    # write report.html
-open report.html           # Windows: start report.html, Linux: xdg-open report.html
 ```
+◆  What do you want to do?
+│  ● Count this computer
+│  ○ Build and open the report
+│  ○ Settings
+│  ○ Quit
+```
+
+Choose with the arrow keys and Enter. **Count** reads this computer's Claude Code transcripts of the
+last 30 days into `data/<host name>/`. **Build** writes `report.html` from everything in `data/` and
+opens it in your browser. **Settings** changes the weekly reset and the names of the computers
+without editing any file. After each of them the screen is cleared and the menu comes back, with
+the result on top, until you choose Quit. The menu starts on your last choice.
+
+It runs on macOS, Linux and Windows. In the classic Windows console it uses plain symbols; Windows
+Terminal shows the full set. Without a terminal, or with `NO_COLOR` set, it asks plain numbered
+questions instead.
+
+`scan_usage.py` and `build_report.py` also run on their own, without questions – for scheduled runs,
+or for more options (see [Every few weeks](#every-few-weeks)).
 
 
 ## Setup
@@ -39,8 +52,8 @@ open report.html           # Windows: start report.html, Linux: xdg-open report.
 ### 1. Keep transcripts for 60 days
 
 Claude Code deletes transcripts after 30 days by default (`cleanupPeriodDays`). Older weeks can
-then no longer be counted. `init.py` shows the current value; to change it, add this to
-`~/.claude/settings.json` on every computer (Windows: `C:\Users\<you>\.claude\settings.json`):
+then no longer be counted. `start.py` shows the current value (also under Settings); to change it,
+add this to `~/.claude/settings.json` on every computer (Windows: `C:\Users\<you>\.claude\settings.json`):
 
 ```json
 {
@@ -53,28 +66,32 @@ This is Claude Code's own settings file, not the `settings.json` of this tool.
 
 ### 2. Your settings: `settings.json`
 
-`init.py` writes `settings.json` in this folder. It holds your own settings and is not part of the
-repository (it is in `.gitignore`). Run `init.py` again at any time to check or change them, or
-edit the file:
+`start.py` writes `settings.json` in this folder and changes it under Settings. It holds your own
+settings and is not part of the repository (it is in `.gitignore`). You can also edit it:
 
 ```json
 {
   "week_reset": { "weekday": "thursday", "time": "17:00", "timezone": "America/New_York" },
-  "computers": { "my-laptop": "Laptop", "desktop-abc123": "Desktop" }
+  "name": "Laptop",
+  "computers": { "desktop-abc123": "Desktop" },
+  "last_action": "count"
 }
 ```
 
-- **`week_reset`** – when your weekly limit resets; it differs per account. `init.py` reads it from
+- **`week_reset`** – when your weekly limit resets; it differs per account. `start.py` reads it from
   the line `/usage` shows in Claude Code (*"Resets Mar 12, 5pm (America/New_York)"*), or asks for
   weekday, time and time zone. `timezone` is an IANA name like `America/New_York` or `Asia/Tokyo`;
-  on Windows, any zone other than `UTC` needs `pip install tzdata`. If the setting does not match
-  the limit messages, the report warns you. Set it before the first scan: week files are named and
-  cut by it.
-- **`computers`** (optional) – display names for the data folders, which are named after the host
-  names. `init.py` sets the name of the computer it runs on; add other computers by hand. Without
-  an entry, the report shows the host name.
+  on Windows, any zone other than `UTC` needs `pip install tzdata`. Use the same reset on every
+  computer. If it does not match the limit messages, the report warns you; week files counted with
+  another reset are skipped. Set it before the first count: week files are named and cut by it.
+- **`name`** – the name of this computer in the report. It is saved in every week file this computer
+  writes, so the report shows it wherever the data is copied. Without it, the folder name (the
+  host name) is shown.
+- **`computers`** (optional) – names that override the name a computer's data carries, by data
+  folder. Set them under Settings → Names of other computers.
+- **`last_action`** – the menu choice `start.py` starts on.
 
-Without `settings.json`, `build_report.py` stops and points to `init.py`; `scan_usage.py` also
+Without `settings.json`, `build_report.py` stops and points to `start.py`; `scan_usage.py` also
 takes the weekly reset as `--reset` (see the next section but one).
 
 ### 3. Check the prices
@@ -109,32 +126,35 @@ for everyone and part of the repository:
 
 ### 4. More than one computer (optional)
 
-The other computers need only `scan_usage.py` – it runs on its own, without the other files of this
-tool. Copy it to any folder there and pass your weekly reset, the same as in your `settings.json`:
+Count every computer you use Claude Code on, and build the report on one of them. There are two
+ways to count another computer:
 
-```sh
-python3 scan_usage.py --reset "thursday 17:00 America/New_York"
-```
+- **Clone this repository there** and run `python3 start.py`: set the same weekly reset and a name,
+  then choose *Count this computer*.
+- **Copy only `scan_usage.py` there** – it runs on its own, without the other files – and pass the
+  weekly reset and a name:
 
-`--reset` also takes the line `/usage` shows (*"Resets Mar 12, 5pm (America/New_York)"*). Each
-computer writes its own folder `data/<host name>/` next to the script. To build one report for all
-of them:
+  ```sh
+  python3 scan_usage.py --reset "thursday 17:00 America/New_York" --name "Desktop"
+  ```
 
-1. Run `scan_usage.py` on every computer.
-2. Copy each computer's own `data/<host name>/` folder into `data/` on the computer that builds the
-   report, replacing existing files. Copy only a computer's own folder, never a whole `data/`
-   folder: older files of other computers could overwrite newer ones.
-3. Run `build_report.py` there.
+  `--reset` also takes the line `/usage` shows (*"Resets Mar 12, 5pm (America/New_York)"*).
 
-To give the other computers nicer names in the report, add them under `computers` in the
-`settings.json` of the computer that builds the report (see above). Folders with the same display
-name are added up. `--pc <name>` sets the folder name instead of the host name.
+Each computer writes its own folder `data/<host name>/`. To build one report for all of them, copy
+each computer's own folder into `data/` on the computer that builds the report, replacing existing
+files, then build there. Copy only a computer's own folder, never a whole `data/` folder: older
+files of other computers could overwrite newer ones.
+
+The report shows every computer by the name its data carries. To call one differently, rename it on
+the building computer under Settings → Names of other computers. Folders with the same name are
+added up. `--pc <folder>` sets the folder name instead of the host name.
 
 
 ## Every few weeks
 
-Run the scan **at least every 4 weeks** (with 60 days of retention; every 2 weeks with the default
-30), otherwise transcripts are gone before they are counted.
+Count every computer **at least every 4 weeks** (with 60 days of retention; every 2 weeks with the
+default 30), otherwise transcripts are gone before they are counted. Use `start.py`, or run the two
+steps directly – they ask nothing, which suits scheduled runs, and take more options:
 
 ```sh
 python3 scan_usage.py                  # weeks of the last 30 days
@@ -147,7 +167,8 @@ python3 build_report.py
 | `-t0 YYYY-MM-DD` | first day (default: today − 30 days) |
 | `-t1 YYYY-MM-DD` | last day, included (default: today) |
 | `--reset "thursday 17:00 America/New_York"` | weekly reset (default: `week_reset` in `settings.json`) |
-| `--pc NAME` | name of this computer and its data folder (default: host name) |
+| `--name NAME` | name of this computer in the report (default: `name` in `settings.json`, else the folder) |
+| `--pc FOLDER` | data folder of this computer (default: host name) |
 | `--projects PATH` | Claude Code transcripts (default: `~/.claude/projects`) |
 | `--force` | replace week files even if the new count finds less |
 
@@ -195,11 +216,11 @@ mean, the band and the trend.
 | `current week` | The week is not over yet. | Nothing; the next scan completes it. |
 | `transcripts only from …` | The first days of the week are no longer in the transcripts. | Check `cleanupPeriodDays`. Harmless on a new computer, see below. |
 | `No price in prices.json` (report) | A model without a price; it counts as $0. | Add it to `prices.json`, build the report again. |
-| `settings.json not found` | No settings yet. | Run `init.py`; or pass `--reset` to `scan_usage.py`. |
+| `settings.json not found` | No settings yet. | Run `start.py`; or pass `--reset` to `scan_usage.py`. |
 | `has an older format and is skipped` (report) | A week file of an incompatible version. | Count the week again, if its transcripts still exist. |
 | `was counted with another weekly reset` (report) | A week file was cut with a different reset than `week_reset` in `settings.json`, e.g. a wrong `--reset` on another computer. | Count it again there with the same reset. |
 | `<computer>: not counted` (report) | A computer has no file for this week. | Scan on that computer and copy its folder. |
-| `Reset per limit message …` (report) | The limit messages name another reset time. | Run `init.py` and correct the reset, then count the weeks again. |
+| `Reset per limit message …` (report) | The limit messages name another reset time. | Correct the reset in `start.py` → Settings, then count the weeks again. |
 
 
 ## How it works
@@ -241,8 +262,8 @@ you open it.
 
 | File | Purpose |
 |---|---|
-| `init.py` | asks for your settings and writes `settings.json` (not in the repository) |
-| `prompts.py` | the small terminal UI of `init.py` (arrow keys, colors; plain questions without a terminal or with `NO_COLOR`) |
+| `start.py` | start here: menu to count, build and change the settings; writes `settings.json` (not in the repository) |
+| `prompts.py` | the small terminal UI of `start.py` (arrow keys, colors; plain questions without a terminal or with `NO_COLOR`) |
 | `scan_usage.py` | counts this computer's usage, one file per limit week; runs on its own and defines the limit weeks for the other two scripts |
 | `build_report.py` | prices the week files and writes `report.html` |
 | `prices.json` | API list prices per model, with their history |

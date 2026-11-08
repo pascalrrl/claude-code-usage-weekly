@@ -1,14 +1,21 @@
-"""A small terminal UI for init.py, standard library only.
+"""A small terminal UI for start.py, standard library only.
 
 In a terminal it draws a step rail with colors, arrow-key menus, yes/no toggles and a spinner
-(macOS and Linux via termios, Windows via msvcrt). Without a terminal (a pipe, some IDE consoles)
-or with NO_COLOR set, it falls back to plain questions, so input can still be piped in.
+(macOS and Linux via termios, Windows via msvcrt). The classic Windows console gets plain
+symbols, as its fonts lack some of the others; Windows Terminal gets the full set. Without a
+terminal (a pipe, some IDE consoles) or with NO_COLOR set, it falls back to plain questions, so
+input can still be piped in.
 """
 import os, sys, threading
 
 FANCY = sys.stdin.isatty() and sys.stdout.isatty() and 'NO_COLOR' not in os.environ and os.environ.get('TERM') != 'dumb'
 if FANCY and os.name == 'nt':
     os.system('')  # switches the Windows console to ANSI escape sequences
+# Symbols: question, answered, selected, not selected, warning, info, spinner frames, input arrow
+if os.name == 'nt' and not os.environ.get('WT_SESSION'):
+    ASK, DONE, ON, OFF, WARN, INFO, SPIN, ARROW = '>', '+', '(*)', '( )', '!', 'i', '|/-\\', '>'
+else:
+    ASK, DONE, ON, OFF, WARN, INFO, SPIN, ARROW = '◆', '◇', '●', '○', '▲', '●', '◒◐◓◑', '›'
 
 
 def _style(code):
@@ -57,7 +64,13 @@ def _key():
 
 
 def _done(label, value):
-    _out(f'{BAR}\n{green("◇")}  {label}\n{BAR}  {dim(value)}\n')
+    _out(f'{BAR}\n{green(DONE)}  {label}\n{BAR}  {dim(value)}\n')
+
+
+def clear():
+    """Empty the screen (only in a terminal)."""
+    if FANCY:
+        _out('\x1b[2J\x1b[H')
 
 
 def intro(title):
@@ -77,7 +90,7 @@ def note(title, lines, warn=False):
     if not FANCY:
         _out('\n' + title + '\n' + ''.join(f'  {x}\n' for x in lines))
         return
-    mark = yellow('▲') if warn else cyan('●')
+    mark = yellow(WARN) if warn else cyan(INFO)
     _out(f'{BAR}\n{mark}  {title}\n' + ''.join(f'{BAR}  {dim(x)}\n' for x in lines))
 
 
@@ -87,9 +100,9 @@ def text(label, default=None, hint=None, validate=None, clean=None, empty='–')
     error = None
     while True:
         if FANCY:
-            lines = [BAR, f'{cyan("◆")}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
-            lines += [f'{BAR}  {yellow("▲ " + error)}'] if error else []
-            prompt = f'{BAR}  {cyan("›")} ' + (dim(f'({default}) ') if default else '')
+            lines = [BAR, f'{cyan(ASK)}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
+            lines += [f'{BAR}  {yellow(WARN + " " + error)}'] if error else []
+            prompt = f'{BAR}  {cyan(ARROW)} ' + (dim(f'({default}) ') if default else '')
             _out('\n'.join(lines) + '\n')
             value = input(prompt).strip() or default or ''
             _clear(len(lines) + 1)
@@ -115,11 +128,11 @@ def confirm(label, default=True):
             if answer in ('y', 'yes', 'n', 'no'):
                 return answer.startswith('y')
     value = default
-    _out(f'{HIDE}{BAR}\n{cyan("◆")}  {label}\n')
+    _out(f'{HIDE}{BAR}\n{cyan(ASK)}  {label}\n')
     try:
         while True:
-            yes_no = (f'{green("●")} Yes {gray("/")} {dim("○ No")}' if value
-                      else f'{dim("○ Yes")} {gray("/")} {green("●")} No')
+            yes_no = (f'{green(ON)} Yes {gray("/")} {dim(OFF + " No")}' if value
+                      else f'{dim(OFF + " Yes")} {gray("/")} {green(ON)} No')
             _out(f'\r\x1b[K{BAR}  {yes_no}')
             k = _key()
             if k == 'enter':
@@ -147,11 +160,11 @@ def select(label, options, default=0, hint=None):
             if answer.isdigit() and 1 <= int(answer) <= len(options):
                 return options[int(answer) - 1][0]
     i, n = default, len(options)
-    head = [BAR, f'{cyan("◆")}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
+    head = [BAR, f'{cyan(ASK)}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
     _out(HIDE + '\n'.join(head) + '\n')
     try:
         while True:
-            _out('\n'.join(f'{BAR}  ' + (f'{green("●")} {t}' if j == i else dim(f'○ {t}'))
+            _out('\n'.join(f'{BAR}  ' + (f'{green(ON)} {t}' if j == i else dim(f'{OFF} {t}'))
                            for j, (_, t) in enumerate(options)))
             k = _key()
             if k == 'enter':
@@ -176,13 +189,12 @@ def task(label, fn):
     stop = threading.Event()
 
     def spin():
-        frames = '◒◐◓◑'
         j = 0
         while not stop.wait(0.12):
-            _out(f'\r\x1b[K{cyan(frames[j % 4])}  {label} …')
+            _out(f'\r\x1b[K{cyan(SPIN[j % len(SPIN)])}  {label} …')
             j += 1
 
-    _out(f'{HIDE}{BAR}\n{cyan("◒")}  {label} …')
+    _out(f'{HIDE}{BAR}\n{cyan(SPIN[0])}  {label} …')
     t = threading.Thread(target=spin, daemon=True)
     t.start()
     try:

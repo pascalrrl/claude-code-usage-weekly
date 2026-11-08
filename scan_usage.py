@@ -17,7 +17,7 @@ existing one (transcripts deleted in the meantime): then the existing file is ke
 A week file holds token counts per model and per hour and the limit messages, no dollar amounts:
 build_report.py prices them with prices.json, so a corrected price applies to every week.
 
-This file also defines the limit weeks and the week files for init.py and build_report.py, which
+This file also defines the limit weeks and the week files for start.py and build_report.py, which
 import them from here.
 
 Reads ~/.claude/projects (Windows: %USERPROFILE%\\.claude\\projects). Python 3.9 or newer.
@@ -44,7 +44,7 @@ class SettingsError(Exception):
     pass
 
 
-# --- Settings and limit weeks (also used by init.py and build_report.py) ---
+# --- Settings and limit weeks (also used by start.py and build_report.py) ---
 
 def default_pc():
     """Name of this computer and its data folder: the host name."""
@@ -115,13 +115,13 @@ def parse_reset(text):
 def load_settings(path=None, reset=None):
     """Read and check settings.json (your own, not in the repository). reset ({'weekday', 'time',
     'timezone'}, from --reset) replaces its week_reset; with reset, settings.json is optional.
-    Returns a dict with 'weekday' (0 = Monday), 'time', 'tz', 'reset_text' and 'computers' (folder
-    name -> display name)."""
+    Returns a dict with 'weekday' (0 = Monday), 'time', 'tz', 'reset_text', 'name' (display name of
+    this computer, or None) and 'computers' (folder name -> display name, overrides)."""
     path = path or os.path.join(HERE, 'settings.json')
     if reset and not os.path.exists(path):
         s = {}
     else:
-        s = read_json(path, ': run init.py first (python3 init.py)')
+        s = read_json(path, ': run start.py first (python3 start.py)')
     r, where = (reset, '--reset') if reset else (s.get('week_reset') or {}, 'settings.json: week_reset')
     weekday = str(r.get('weekday', '')).lower()
     if weekday not in WEEKDAYS:
@@ -137,7 +137,10 @@ def load_settings(path=None, reset=None):
     computers = s.get('computers') or {}
     if not isinstance(computers, dict) or not all(isinstance(v, str) for v in computers.values()):
         raise SettingsError('settings.json: computers must map folder names to display names')
-    return {'weekday': WEEKDAYS.index(weekday), 'time': clock, 'tz': tz, 'computers': computers,
+    name = s.get('name')
+    if name is not None and not (isinstance(name, str) and name.strip()):
+        raise SettingsError('settings.json: name must be the display name of this computer')
+    return {'weekday': WEEKDAYS.index(weekday), 'time': clock, 'tz': tz, 'computers': computers, 'name': name,
             'reset_text': reset_text({'weekday': weekday, 'time': f'{clock:%H:%M}', 'timezone': tz_name})}
 
 
@@ -278,15 +281,15 @@ def scan(files, begin, end, settings):
     return weeks, dedupe(events), oldest
 
 
-def week_record(pc, w, w_end, now, models, hits, oldest):
+def week_record(pc, name, w, w_end, now, models, hits, oldest):
     out = {}
-    for name, v in sorted(models.items(), key=lambda kv: -kv[1]['requests']):
+    for model, v in sorted(models.items(), key=lambda kv: -kv[1]['requests']):
         hourly = {str(h): v['hourly'][h] for h in sorted(v['hourly'])}
-        out[name] = {'requests': v['requests'],
+        out[model] = {'requests': v['requests'],
                      **{f: sum(x[i] for x in hourly.values()) for i, f in enumerate(TOKEN_FIELDS)},
                      'hourly': hourly}
     return {
-        'format': FORMAT, 'pc': pc, 'week_start': iso(w), 'week_end': iso(w_end),
+        'format': FORMAT, 'pc': pc, **({'name': name} if name else {}), 'week_start': iso(w), 'week_end': iso(w_end),
         'scanned_at': iso(now), 'counted_until': iso(min(w_end, now)),
         'data_from': iso(oldest) if oldest else None,
         'requests': sum(v['requests'] for v in out.values()),
@@ -302,6 +305,8 @@ def dump(rec):
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='replace')  # a Windows code page cannot show every character
     home = os.path.expanduser('~')
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('-t0', '--from', dest='t0', type=date_arg, help='first day, YYYY-MM-DD (default: today - 30 days)')
@@ -309,7 +314,9 @@ def main():
     ap.add_argument('--reset', type=reset_arg,
                     help='weekly reset, e.g. "thursday 17:00 America/New_York" (default: week_reset in settings.json)')
     ap.add_argument('--pc', default=default_pc(),
-                    help='name of this computer, also the data folder (default: host name, %(default)s)')
+                    help='data folder of this computer (default: host name, %(default)s)')
+    ap.add_argument('--name', help='display name of this computer in the report, saved in its week files '
+                                   '(default: name in settings.json, else the data folder)')
     ap.add_argument('--projects', default=os.path.join(home, '.claude', 'projects'),
                     help='Claude Code transcripts (default: %(default)s)')
     ap.add_argument('--force', action='store_true',
@@ -340,13 +347,14 @@ def main():
 
     outdir = os.path.join(HERE, 'data', a.pc)
     os.makedirs(outdir, exist_ok=True)
-    print(f'Computer {a.pc}, {len(files)} transcripts, oldest entry {oldest:%Y-%m-%d %H:%M} UTC, '
+    who = f'{a.name or settings["name"]} (data/{a.pc})' if a.name or settings['name'] else a.pc
+    print(f'Computer {who}, {len(files)} transcripts, oldest entry {oldest:%Y-%m-%d %H:%M} UTC, '
           f'weekly reset {settings["reset_text"]}' if oldest
-          else f'Computer {a.pc}: no transcripts in {a.projects}')
+          else f'Computer {who}: no transcripts in {a.projects}')
     w = first
     while w <= last and w < now:
         w_end = week_end(w, settings)
-        rec = week_record(a.pc, w, w_end, now, weeks.get(w, {}), hits[w], oldest)
+        rec = week_record(a.pc, a.name or settings['name'], w, w_end, now, weeks.get(w, {}), hits[w], oldest)
         notes = []
         if w_end > now:
             notes.append(f'current week, counted until {now:%Y-%m-%d %H:%M} UTC')
