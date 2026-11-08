@@ -194,9 +194,10 @@ mean, the band and the trend.
 | `kept the existing file` | A finished week was counted before; its transcripts are partly deleted now. | Nothing. |
 | `current week` | The week is not over yet. | Nothing; the next scan completes it. |
 | `transcripts only from …` | The first days of the week are no longer in the transcripts. | Check `cleanupPeriodDays`. Harmless on a new computer, see below. |
-| `no price for … in prices.json` | A model without a price. | Add it to `prices.json`, build the report again. |
+| `No price in prices.json` (report) | A model without a price; it counts as $0. | Add it to `prices.json`, build the report again. |
 | `settings.json not found` | No settings yet. | Run `init.py`; or pass `--reset` to `scan_usage.py`. |
-| `has an older format and is skipped` | A week file of an incompatible version. | Count the week again, if its transcripts still exist. |
+| `has an older format and is skipped` (report) | A week file of an incompatible version. | Count the week again, if its transcripts still exist. |
+| `was counted with another weekly reset` (report) | A week file was cut with a different reset than `week_reset` in `settings.json`, e.g. a wrong `--reset` on another computer. | Count it again there with the same reset. |
 | `<computer>: not counted` (report) | A computer has no file for this week. | Scan on that computer and copy its folder. |
 | `Reset per limit message …` (report) | The limit messages name another reset time. | Run `init.py` and correct the reset, then count the weeks again. |
 

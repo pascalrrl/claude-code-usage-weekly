@@ -101,13 +101,20 @@ def load(settings, prices):
     for path in sorted(glob.glob(os.path.join(HERE, 'data', '*', '*.json'))):
         with open(path, encoding='utf-8') as fh:
             r = json.load(fh)
+        rel = os.path.relpath(path, HERE)
         if r.get('format') != su.FORMAT:
-            skipped.append(os.path.relpath(path, HERE))
+            skipped.append(f'{rel} has an older format and is skipped; count that week again with scan_usage.py')
+            continue
+        start, end = ts(r['week_start']), ts(r['week_end'])
+        # A file counted with another weekly reset (e.g. --reset on another computer) cuts the weeks
+        # differently: added up with the others it would give shifted or doubled weeks
+        if su.week_start(start, settings) != start or su.week_end(start, settings) != end:
+            skipped.append(f'{rel} was counted with another weekly reset (week from {r["week_start"]}) and is '
+                           f'skipped; count it again with the reset {settings["reset_text"]}')
             continue
         pc = labels.get(r['pc'], r['pc'])
         if pc not in pcs:
             pcs.append(pc)
-        start, end = ts(r['week_start']), ts(r['week_end'])
         k = su.week_key(start, settings)
         first[pc] = min(first.get(pc, k), k)
         w = weeks.setdefault(k, {'start': start, 'end': end, 'pcs': {}, 'hits': [], 'models': {}, 'unknown': set()})
@@ -201,8 +208,8 @@ def main():
     except SettingsError as e:
         sys.exit(f'Error: {e}')
     pcs, weeks, skipped = load(settings, prices)
-    for path in skipped:
-        print(f'Warning: {path} has an older format and is skipped; count that week again with scan_usage.py')
+    for message in skipped:
+        print(f'Warning: {message}')
     if not weeks:
         sys.exit('No week files in data/. Run scan_usage.py first.')
     keys = sorted(weeks)
