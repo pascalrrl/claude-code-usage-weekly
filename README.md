@@ -22,7 +22,7 @@ python3 start.py
 ```
 
 On Windows, use `python` instead of `python3`. The first start asks two questions in the terminal –
-your weekly reset and a name for this computer – and writes `settings.json`. After that, `start.py`
+a name for this computer and your weekly reset – and writes `settings.json`. After that, `start.py`
 shows a menu:
 
 ```
@@ -35,9 +35,11 @@ shows a menu:
 
 Choose with the arrow keys and Enter. **Count** reads this computer's Claude Code transcripts of the
 last 30 days into `data/<host name>/`. **Build** writes `report.html` from everything in `data/` and
-opens it in your browser. **Settings** changes the weekly reset and the names of the computers
-without editing any file. After each of them the screen is cleared and the menu comes back, with
-the result on top, until you choose Quit. The menu starts on your last choice.
+opens it in your browser. **Settings** shows every setting with its value on one screen –
+the names of the computers and the weekday, time and time zone of the weekly reset – and changes
+the one you choose, without editing any file; the time zone is picked from a list that filters as
+you type. Back (or Esc) leaves Settings. After each of them the screen is cleared and the menu comes back, with
+the result on top, until you choose Quit.
 
 It runs on macOS, Linux and Windows. In the classic Windows console it uses plain symbols; Windows
 Terminal shows the full set. Without a terminal, or with `NO_COLOR` set, it asks plain numbered
@@ -52,7 +54,7 @@ or for more options (see [Every few weeks](#every-few-weeks)).
 ### 1. Keep transcripts for 60 days
 
 Claude Code deletes transcripts after 30 days by default (`cleanupPeriodDays`). Older weeks can
-then no longer be counted. `start.py` shows the current value (also under Settings); to change it,
+then no longer be counted. `start.py` shows the current value (in Settings when it is too short); to change it,
 add this to `~/.claude/settings.json` on every computer (Windows: `C:\Users\<you>\.claude\settings.json`):
 
 ```json
@@ -73,8 +75,7 @@ settings and is not part of the repository (it is in `.gitignore`). You can also
 {
   "week_reset": { "weekday": "thursday", "time": "17:00", "timezone": "America/New_York" },
   "name": "Laptop",
-  "computers": { "desktop-abc123": "Desktop" },
-  "last_action": "count"
+  "computers": { "desktop-abc123": "Desktop" }
 }
 ```
 
@@ -88,8 +89,7 @@ settings and is not part of the repository (it is in `.gitignore`). You can also
   writes, so the report shows it wherever the data is copied. Without it, the folder name (the
   host name) is shown.
 - **`computers`** (optional) – names that override the name a computer's data carries, by data
-  folder. Set them under Settings → Names of other computers.
-- **`last_action`** – the menu choice `start.py` starts on.
+  folder. Set them under Settings, where every computer whose data is in `data/` has a line.
 
 Without `settings.json`, `build_report.py` stops and points to `start.py`; `scan_usage.py` also
 takes the weekly reset as `--reset` (see the next section but one).
@@ -146,7 +146,7 @@ files, then build there. Copy only a computer's own folder, never a whole `data/
 files of other computers could overwrite newer ones.
 
 The report shows every computer by the name its data carries. To call one differently, rename it on
-the building computer under Settings → Names of other computers. Folders with the same name are
+the building computer under Settings. Folders with the same name are
 added up. `--pc <folder>` sets the folder name instead of the host name.
 
 

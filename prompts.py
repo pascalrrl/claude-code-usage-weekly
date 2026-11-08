@@ -4,9 +4,10 @@ In a terminal it draws a step rail with colors, arrow-key menus, yes/no toggles 
 (macOS and Linux via termios, Windows via msvcrt). The classic Windows console gets plain
 symbols, as its fonts lack some of the others; Windows Terminal gets the full set. Without a
 terminal (a pipe, some IDE consoles) or with NO_COLOR set, it falls back to plain questions, so
-input can still be piped in.
+input can still be piped in. In a terminal, Esc leaves a question by raising Back (in select only
+with back=True).
 """
-import os, sys, threading
+import os, shutil, sys, threading
 
 FANCY = sys.stdin.isatty() and sys.stdout.isatty() and 'NO_COLOR' not in os.environ and os.environ.get('TERM') != 'dumb'
 if FANCY and os.name == 'nt':
@@ -37,30 +38,86 @@ def _clear(lines):
     _out(f'\x1b[{lines}F\x1b[J' if lines else '\r\x1b[J')
 
 
+class Back(Exception):
+    """Esc: the question is left without an answer."""
+
+
+ESCAPES = {'[A': 'up', '[B': 'down', '[C': 'right', '[D': 'left', 'OA': 'up', 'OB': 'down', 'OC': 'right',
+           'OD': 'left', '[H': 'home', '[F': 'end', 'OH': 'home', 'OF': 'end', '[1~': 'home', '[4~': 'end',
+           '[3~': 'delete'}
+
+
 def _key():
-    """One key press: 'up', 'down', 'left', 'right', 'enter', 'tab', or the character."""
+    """One key press: 'up', 'down', 'left', 'right', 'home', 'end', 'delete', 'backspace', 'clear',
+    'enter', 'tab', 'esc', or the character."""
     if os.name == 'nt':
         import msvcrt
         c = msvcrt.getwch()
         if c in ('\x00', '\xe0'):
-            return {'H': 'up', 'P': 'down', 'K': 'left', 'M': 'right'}.get(msvcrt.getwch(), '')
+            return {'H': 'up', 'P': 'down', 'K': 'left', 'M': 'right', 'G': 'home', 'O': 'end',
+                    'S': 'delete'}.get(msvcrt.getwch(), '')
     else:
         import select, termios, tty
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
-            tty.setraw(fd)
-            c = os.read(fd, 1).decode(errors='ignore')
-            if c == '\x1b' and select.select([fd], [], [], 0.05)[0]:
-                seq = os.read(fd, 2).decode(errors='ignore')
-                return {'[A': 'up', '[B': 'down', '[C': 'right', '[D': 'left'}.get(seq, '')
+            tty.setraw(fd, termios.TCSANOW)  # TCSAFLUSH, the default, would drop keys typed or pasted ahead
+            b = os.read(fd, 1)
+            if b == b'\x1b':  # Esc alone, or the start of an arrow or other special key
+                seq = b''
+                while len(seq) < 8 and select.select([fd], [], [], 0.05)[0]:
+                    seq += os.read(fd, 1)
+                    if len(seq) >= 2 and (seq[-1:].isalpha() or seq[-1:] == b'~'):
+                        break
+                if seq:
+                    return ESCAPES.get(seq.decode(errors='ignore'), '')
+            elif b and b[0] >= 0xc0:  # the rest of a UTF-8 character such as ä
+                b += os.read(fd, 1 if b[0] < 0xe0 else 2 if b[0] < 0xf0 else 3)
+            c = b.decode(errors='ignore')
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
     if c == '\x03':
         raise KeyboardInterrupt
     if c == '\x04':
         raise EOFError
-    return {'\r': 'enter', '\n': 'enter', '\t': 'tab'}.get(c, c)
+    return {'\r': 'enter', '\n': 'enter', '\t': 'tab', '\x1b': 'esc', '\x7f': 'backspace', '\x08': 'backspace',
+            '\x01': 'home', '\x05': 'end', '\x15': 'clear'}.get(c, c)
+
+
+def _edit(prompt, value):
+    """A one-line editor that starts with value: arrow keys, Home, End, Backspace, Delete, Ctrl-U;
+    Enter returns the line, Esc raises Back."""
+    buf, pos = list(value), len(value)
+    while True:
+        width = max(10, shutil.get_terminal_size().columns - 6)  # the prompt "│  › " takes 5
+        off = max(0, pos - width)  # a long line scrolls instead of wrapping
+        shown = ''.join(buf[off:off + width])
+        left = len(shown) - (pos - off)
+        _out(f'\r\x1b[K{prompt}{shown}' + (f'\x1b[{left}D' if left else ''))
+        k = _key()
+        if k in ('enter', 'esc'):
+            _out('\n')
+            if k == 'esc':
+                raise Back
+            return ''.join(buf).strip()
+        if k == 'left':
+            pos = max(0, pos - 1)
+        elif k == 'right':
+            pos = min(len(buf), pos + 1)
+        elif k == 'home':
+            pos = 0
+        elif k == 'end':
+            pos = len(buf)
+        elif k == 'backspace' and pos:
+            del buf[pos - 1]
+            pos -= 1
+        elif k == 'delete' and pos < len(buf):
+            del buf[pos]
+        elif k == 'clear':
+            buf, pos = [], 0
+        elif len(k) == 1 and k.isprintable():
+            buf.insert(pos, k)
+            pos += 1
 
 
 def _done(label, value):
@@ -95,17 +152,19 @@ def note(title, lines, warn=False):
 
 
 def text(label, default=None, hint=None, validate=None, clean=None, empty='–'):
-    """Free text; Enter takes the default. validate(value) returns an error message or None;
+    """Free text. In a terminal the default is already typed in and can be edited, Esc raises
+    Back; without one, Enter takes the default. validate(value) returns an error message or None;
     clean(value) normalizes a valid answer; empty is shown for an empty answer."""
-    error = None
+    error, value = None, default or ''
     while True:
         if FANCY:
             lines = [BAR, f'{cyan(ASK)}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
             lines += [f'{BAR}  {yellow(WARN + " " + error)}'] if error else []
-            prompt = f'{BAR}  {cyan(ARROW)} ' + (dim(f'({default}) ') if default else '')
             _out('\n'.join(lines) + '\n')
-            value = input(prompt).strip() or default or ''
-            _clear(len(lines) + 1)
+            try:
+                value = _edit(f'{BAR}  {cyan(ARROW)} ', value)
+            finally:
+                _clear(len(lines) + 1)
         else:
             if error:
                 _out(f'  {error}\n')
@@ -119,7 +178,7 @@ def text(label, default=None, hint=None, validate=None, clean=None, empty='–')
 
 
 def confirm(label, default=True):
-    """Yes or no: arrow keys, Tab, y or n, then Enter."""
+    """Yes or no: arrow keys, Tab, y or n, then Enter; Esc raises Back."""
     if not FANCY:
         while True:
             answer = input(f'{label} [{"Y/n" if default else "y/N"}]: ').strip().lower()
@@ -135,6 +194,9 @@ def confirm(label, default=True):
                       else f'{dim(OFF + " Yes")} {gray("/")} {green(ON)} No')
             _out(f'\r\x1b[K{BAR}  {yes_no}')
             k = _key()
+            if k == 'esc':
+                _clear(2)
+                raise Back
             if k == 'enter':
                 break
             if k in ('left', 'right', 'up', 'down', 'tab', ' '):
@@ -149,25 +211,32 @@ def confirm(label, default=True):
     return value
 
 
-def select(label, options, default=0, hint=None):
-    """One of options (a list of (value, text)): arrow keys, then Enter."""
+def select(label, options, default=0, hint=None, back=False):
+    """One of options, a list of (value, text) or (value, text, detail): arrow keys, then Enter.
+    The details form a second column. With back, a last entry Back (or Esc) returns None."""
+    options = list(options) + [(None, 'Back')] * back
+    width = max((len(o[1]) for o in options if len(o) > 2), default=0)
+    rows = [o[1].ljust(width) + '  ' + o[2] if len(o) > 2 else o[1] for o in options]
+    i, n = default, len(options)
     if not FANCY:
-        _out(f'{label}\n' + ''.join(f'  {i + 1}) {t}\n' for i, (_, t) in enumerate(options)))
+        _out(f'{label}\n' + ''.join(f'  {j + 1}) {t}\n' for j, t in enumerate(rows)))
         while True:
-            answer = input(f'Choose 1–{len(options)} [{default + 1}]: ').strip()
+            answer = input(f'Choose 1–{n} [{default + 1}]: ').strip()
             if not answer:
                 return options[default][0]
-            if answer.isdigit() and 1 <= int(answer) <= len(options):
+            if answer.isdigit() and 1 <= int(answer) <= n:
                 return options[int(answer) - 1][0]
-    i, n = default, len(options)
     head = [BAR, f'{cyan(ASK)}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
     _out(HIDE + '\n'.join(head) + '\n')
     try:
         while True:
-            _out('\n'.join(f'{BAR}  ' + (f'{green(ON)} {t}' if j == i else dim(f'{OFF} {t}'))
-                           for j, (_, t) in enumerate(options)))
+            _out('\n'.join(f'{BAR}  ' + (green(ON) + ' ' + (f'{o[1].ljust(width)}  {dim(o[2])}' if len(o) > 2 else o[1])
+                                         if j == i else dim(f'{OFF} {rows[j]}')) for j, o in enumerate(options)))
             k = _key()
             if k == 'enter':
+                break
+            if k == 'esc' and back:
+                i = n - 1
                 break
             if k in ('up', 'k'):
                 i = (i - 1) % n
@@ -177,8 +246,62 @@ def select(label, options, default=0, hint=None):
     finally:
         _out(SHOW)
     _clear(n - 1 + len(head))
+    if options[i][0] is None:
+        return None
     _done(label, options[i][1])
     return options[i][0]
+
+
+def search(label, options, hint=None, back=False, rows=8):
+    """One of a long list of names: typing filters it (spaces match _), arrow keys choose, Enter
+    takes it. With back, a last entry Back (or Esc) returns None. Needs a terminal (FANCY)."""
+    def key(s):
+        return s.lower().replace('_', ' ')
+    query, i, drawn = '', 0, 0
+    _out(HIDE)
+    try:
+        while True:
+            matches = [o for o in options if key(query) in key(o)] if query else list(options)
+            choices = matches + [None] * back
+            i = min(i, max(len(choices) - 1, 0))
+            top = min(max(0, i - rows + 1), max(0, len(matches) - rows))  # scroll the window to i
+            lines = [BAR, f'{cyan(ASK)}  {label}'] + ([f'{BAR}  {dim(hint)}'] if hint else [])
+            lines.append(f'{BAR}  {cyan(ARROW)} {query}\x1b[7m \x1b[0m')
+            for j in range(top, min(top + rows, len(matches))):
+                lines.append(f'{BAR}  ' + (f'{green(ON)} {matches[j]}' if j == i else dim(f'{OFF} {matches[j]}')))
+            if not matches:
+                lines.append(f'{BAR}  {dim("No match")}')
+            more = len(matches) - min(top + rows, len(matches))
+            if top or more:
+                lines.append(f'{BAR}  ' + dim(f'{top} above · {more} below'))
+            if back:
+                lines.append(f'{BAR}  ' + (f'{green(ON)} Back' if i == len(matches) else dim(f'{OFF} Back')))
+            _clear(drawn - 1) if drawn else None
+            _out('\n'.join(lines))
+            drawn = len(lines)
+            k = _key()
+            if k == 'enter' and choices:
+                break
+            if k == 'esc' and back:
+                i = len(choices) - 1
+                break
+            if k == 'up' and choices:
+                i = (i - 1) % len(choices)
+            elif k in ('down', 'tab') and choices:
+                i = (i + 1) % len(choices)
+            elif k == 'backspace':
+                query, i = query[:-1], 0
+            elif k == 'clear':
+                query, i = '', 0
+            elif len(k) == 1 and k.isprintable():
+                query, i = query + k, 0
+    finally:
+        _out(SHOW)
+    _clear(drawn - 1)
+    if choices[i] is None:
+        return None
+    _done(label, choices[i])
+    return choices[i]
 
 
 def task(label, fn):
