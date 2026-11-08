@@ -22,10 +22,39 @@ RETENTION = 60  # days of transcripts to keep, so that a count every 4 weeks mis
 ACTIONS = [('count', 'Count this computer'), ('build', 'Build and open the report'), ('settings', 'Settings'), ('quit', 'Quit')]
 
 
+TAGLINE = 'your weekly limit in API-price dollars'
+CREDITS = 'by pascalrrl · MIT License'
+URL = 'github.com/pascalrrl/claude-code-usage-weekly'
+WEEK = [9, 15, 22, 31, 27, 19, 11]  # bar heights of the chart, in eighths of a line
+PLAIN = ui.ASK == '>'  # the classic Windows console: ASCII frame and bars
+
+
+def week_chart():
+    """Seven bars, one per day of a week, four lines high."""
+    blocks = ' ..::==##' if PLAIN else ' ▁▂▃▄▅▆▇█'
+    return [' '.join(blocks[min(8, max(0, h - r * 8))] for h in WEEK) for r in range(3, -1, -1)]
+
+
+def header():
+    """The header of the main screen: a week chart, the title and the credits, framed (only in a terminal)."""
+    if not ui.FANCY:
+        ui.intro(TITLE)
+        return
+    width, (tl, tr, bl, br, h, v) = 68, '++++-|' if PLAIN else '╭╮╰╯─│'
+    chart = week_chart()
+    text = [(TITLE, ui.bold), (TAGLINE, str), ('', str), (CREDITS, ui.dim)]
+    rows = [('', '')] + [(f'   {chart[i]}    {t}', f'   {ui.cyan(chart[i])}    {style(t)}') for i, (t, style) in enumerate(text)]
+    rows += [(' ' * 20 + URL, ' ' * 20 + ui.dim(URL)), ('', '')]
+    c = ui.cyan
+    lines = ([c(tl + h * width + tr)] + [c(v) + styled + ' ' * (width - len(plain)) + c(v) for plain, styled in rows]
+             + [c(bl + h * width + br)])
+    print('\n' + '\n'.join(lines))
+
+
 def screen(title, results=()):
     """A fresh screen (in a terminal) with the results of the last step on top."""
     ui.clear()
-    ui.intro(title)
+    header() if title == TITLE else ui.intro(title)
     for show in results:
         show()
 
