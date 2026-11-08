@@ -74,7 +74,8 @@ edit the file:
   names. `init.py` sets the name of the computer it runs on; add other computers by hand. Without
   an entry, the report shows the host name.
 
-Without `settings.json`, both scripts stop and point to `init.py`.
+Without `settings.json`, `build_report.py` stops and points to `init.py`; `scan_usage.py` also
+takes the weekly reset as `--reset` (see the next section but one).
 
 ### 3. Check the prices
 
@@ -104,13 +105,20 @@ for everyone and part of the repository:
 - The week files hold token counts, not dollars. The report applies the prices valid in each hour,
   so after fixing or adding a price you only build the report again – old weeks are priced
   correctly too, even if their transcripts are gone.
-- A model without a price counts as $0, and both scripts warn about it.
+- A model without a price counts as $0, and the report warns about it.
 
 ### 4. More than one computer (optional)
 
-Clone or copy this folder to every computer you use Claude Code on and run `init.py` there, with the
-same weekly reset. Each computer writes its own folder `data/<host name>/`. To build one report for
-all of them:
+The other computers need only `scan_usage.py` – it runs on its own, without the other files of this
+tool. Copy it to any folder there and pass your weekly reset, the same as in your `settings.json`:
+
+```sh
+python3 scan_usage.py --reset "thursday 17:00 America/New_York"
+```
+
+`--reset` also takes the line `/usage` shows (*"Resets Mar 12, 5pm (America/New_York)"*). Each
+computer writes its own folder `data/<host name>/` next to the script. To build one report for all
+of them:
 
 1. Run `scan_usage.py` on every computer.
 2. Copy each computer's own `data/<host name>/` folder into `data/` on the computer that builds the
@@ -119,14 +127,8 @@ all of them:
 3. Run `build_report.py` there.
 
 To give the other computers nicer names in the report, add them under `computers` in the
-`settings.json` of the computer that builds the report:
-
-```json
-"computers": {"my-laptop": "Laptop", "desktop-abc123": "Desktop"}
-```
-
-Folders with the same display name are added up. `--pc <name>` sets the folder name instead of the
-host name.
+`settings.json` of the computer that builds the report (see above). Folders with the same display
+name are added up. `--pc <name>` sets the folder name instead of the host name.
 
 
 ## Every few weeks
@@ -144,6 +146,7 @@ python3 build_report.py
 |---|---|
 | `-t0 YYYY-MM-DD` | first day (default: today − 30 days) |
 | `-t1 YYYY-MM-DD` | last day, included (default: today) |
+| `--reset "thursday 17:00 America/New_York"` | weekly reset (default: `week_reset` in `settings.json`) |
 | `--pc NAME` | name of this computer and its data folder (default: host name) |
 | `--projects PATH` | Claude Code transcripts (default: `~/.claude/projects`) |
 | `--force` | replace week files even if the new count finds less |
@@ -192,7 +195,7 @@ mean, the band and the trend.
 | `current week` | The week is not over yet. | Nothing; the next scan completes it. |
 | `transcripts only from …` | The first days of the week are no longer in the transcripts. | Check `cleanupPeriodDays`. Harmless on a new computer, see below. |
 | `no price for … in prices.json` | A model without a price. | Add it to `prices.json`, build the report again. |
-| `settings.json not found` | No settings yet. | Run `init.py`. |
+| `settings.json not found` | No settings yet. | Run `init.py`; or pass `--reset` to `scan_usage.py`. |
 | `has an older format and is skipped` | A week file of an incompatible version. | Count the week again, if its transcripts still exist. |
 | `<computer>: not counted` (report) | A computer has no file for this week. | Scan on that computer and copy its folder. |
 | `Reset per limit message …` (report) | The limit messages name another reset time. | Run `init.py` and correct the reset, then count the weeks again. |
@@ -239,9 +242,8 @@ you open it.
 |---|---|
 | `init.py` | asks for your settings and writes `settings.json` (not in the repository) |
 | `prompts.py` | the small terminal UI of `init.py` (arrow keys, colors; plain questions without a terminal or with `NO_COLOR`) |
-| `scan_usage.py` | counts this computer's usage, one file per limit week |
-| `build_report.py` | merges all week files and writes `report.html` |
-| `common.py` | shared code: settings, limit weeks, prices |
+| `scan_usage.py` | counts this computer's usage, one file per limit week; runs on its own and defines the limit weeks for the other two scripts |
+| `build_report.py` | prices the week files and writes `report.html` |
 | `prices.json` | API list prices per model, with their history |
 | `template.html`, `theme.json` | layout and colors of the report |
 

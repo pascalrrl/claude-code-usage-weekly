@@ -7,12 +7,12 @@ settings.json, and optionally count the last 30 days and open the report.
 Run it again at any time to check or change the settings; other entries of settings.json, like
 the names of your other computers, are kept.
 """
-import datetime as dt, glob, json, os, pathlib, re, subprocess, sys, webbrowser
+import glob, json, os, pathlib, subprocess, sys, webbrowser
 
-import common
 import prompts as ui
+import scan_usage as su  # limit weeks and settings.json
 
-SETTINGS = os.path.join(common.HERE, 'settings.json')
+SETTINGS = os.path.join(su.HERE, 'settings.json')
 RETENTION = 60  # days of transcripts to keep, so that a scan every 4 weeks misses nothing
 
 
@@ -27,42 +27,27 @@ def local_tz_name():
 
 def tz_error(name):
     try:
-        common._timezone(name)
+        su.timezone(name)
         return None
-    except common.SettingsError as e:
-        return str(e).replace('settings.json: ', '')
-
-
-def reset_text(r):
-    return f'{r["weekday"].capitalize()} {r["time"]} {r["timezone"]}'
-
-
-def parse_reset(text):
-    """Weekly reset from the line /usage shows, None if it cannot be read."""
-    if not text.lower().startswith('resets'):
-        text = 'resets ' + text
-    m = common.RESET_RE.search(text)
-    r = common.reset_from_text(text, dt.datetime.now(common.UTC)) if m and m[1] else None
-    return {'weekday': common.WEEKDAYS[r.weekday()], 'time': f'{r:%H:%M}', 'timezone': m[6]} if r else None
+    except su.SettingsError as e:
+        return str(e)
 
 
 def ask_reset():
     while True:
         line = ui.text('When does your weekly limit reset?', hint='Paste the reset of the weekly limit from /usage in '
                        'Claude Code, e.g. "Resets Mar 12, 5pm (America/New_York)" – or press Enter to pick it step by step',
-                       validate=lambda s: None if not s or parse_reset(s) else 'Could not read a date, a time and a time zone',
+                       validate=lambda s: None if not s or su.parse_reset(s) else 'Could not read a date, a time and a time zone',
                        empty='step by step')
         if not line:
             break
-        reset = parse_reset(line)
-        if ui.confirm(f'Weekly reset {reset_text(reset)} – correct?'):
+        reset = su.parse_reset(line)
+        if ui.confirm(f'Weekly reset {su.reset_text(reset)} – correct?'):
             return reset
-    weekday = ui.select('Weekday of the reset', [(d, d.capitalize()) for d in common.WEEKDAYS])
+    weekday = ui.select('Weekday of the reset', [(d, d.capitalize()) for d in su.WEEKDAYS])
 
-    def bad_time(s):
-        m = re.fullmatch(r'(\d{1,2}):(\d{2})', s)
-        return None if m and int(m[1]) < 24 and int(m[2]) < 60 else 'Use 24-hour time like 17:00'
-    time = ui.text('Time of the reset (24-hour, HH:MM)', validate=bad_time, clean=lambda s: s.zfill(5))
+    time = ui.text('Time of the reset (24-hour, HH:MM)', clean=lambda s: s.zfill(5),
+                   validate=lambda s: None if su.parse_clock(s) else 'Use 24-hour time like 17:00')
     timezone = ui.text('Time zone', default=local_tz_name(), hint='IANA name like America/New_York, or UTC',
                        validate=tz_error)
     return {'weekday': weekday, 'time': time, 'timezone': timezone}
@@ -86,7 +71,7 @@ def retention_note():
 
 
 def run(script):
-    p = subprocess.run([sys.executable, os.path.join(common.HERE, script)],
+    p = subprocess.run([sys.executable, os.path.join(su.HERE, script)],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     return p.returncode == 0, p.stdout.splitlines()
 
@@ -106,7 +91,7 @@ def first_run():
     ok, lines = ui.task('Building the report', lambda: run('build_report.py'))
     ui.note('Report built' if ok else 'Building the report failed', summary(lines), warn=not ok)
     if ok:
-        webbrowser.open(pathlib.Path(common.HERE, 'report.html').as_uri())
+        webbrowser.open(pathlib.Path(su.HERE, 'report.html').as_uri())
     return ok
 
 
@@ -122,13 +107,13 @@ def main():
         sys.exit(1)
 
     reset = settings.get('week_reset')
-    if not (reset and ui.confirm(f'Keep the weekly reset {reset_text({"timezone": "UTC", **reset})}?')):
+    if not (reset and ui.confirm(f'Keep the weekly reset {su.reset_text(reset)}?')):
         settings['week_reset'] = ask_reset()
-        if reset and settings['week_reset'] != reset and glob.glob(os.path.join(common.HERE, 'data', '*', '*.json')):
+        if reset and settings['week_reset'] != reset and glob.glob(os.path.join(su.HERE, 'data', '*', '*.json')):
             ui.note('The reset changed', ['The week files in data/ were cut with the old reset. Delete them',
                                           'and count again (scan_usage.py -t0 YYYY-MM-DD).'], warn=True)
 
-    pc = common.default_pc()
+    pc = su.default_pc()
     computers = settings.setdefault('computers', {})
     name = ui.text('Name of this computer in the report', default=computers.get(pc, pc),
                    hint=f'Its data folder is data/{pc}', validate=lambda s: None if s else 'Enter a name')
@@ -144,8 +129,8 @@ def main():
         fh.write(json.dumps(settings, indent=2, ensure_ascii=False) + '\n')
     os.replace(tmp, SETTINGS)
     try:
-        common.load_settings()
-    except common.SettingsError as e:
+        su.load_settings()
+    except su.SettingsError as e:
         ui.outro(ui.red(f'Saved settings.json, but it has an error: {e}. Run init.py again.'))
         sys.exit(1)
     ui.step('Saved settings.json', 'Names of other computers can be added there under "computers"')

@@ -4,7 +4,7 @@ In a terminal it draws a step rail with colors, arrow-key menus, yes/no toggles 
 (macOS and Linux via termios, Windows via msvcrt). Without a terminal (a pipe, some IDE consoles)
 or with NO_COLOR set, it falls back to plain questions, so input can still be piped in.
 """
-import os, sys, threading, time
+import os, sys, threading
 
 FANCY = sys.stdin.isatty() and sys.stdout.isatty() and 'NO_COLOR' not in os.environ and os.environ.get('TERM') != 'dumb'
 if FANCY and os.name == 'nt':

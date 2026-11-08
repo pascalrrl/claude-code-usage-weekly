@@ -17,13 +17,65 @@ settings.json ("computers"); several folders with the same name are added up.
 """
 import collections, datetime as dt, glob, json, os, re, sys
 
-import common
-from common import TOKEN_FIELDS, UTC, parse_ts as ts
+import scan_usage as su  # limit weeks, settings.json and the week files
+from scan_usage import HERE, TOKEN_FIELDS, UTC, SettingsError, parse_ts as ts
 
 FIELDS = ('requests', 'input', 'output', 'cache_write', 'cache_read', 'cost_usd')
 KEEP_DAYS = 30  # shortest retention of transcripts (Claude Code's default cleanupPeriodDays)
 NEW_MARGIN_DAYS = 7  # this far inside the retention the oldest entry must lie: a new computer
 OTHERS = '_other'
+
+
+def _day(v, where):
+    if v is None:
+        return None
+    try:
+        return dt.datetime.combine(su.parse_date(v), dt.time(0), UTC)
+    except (TypeError, ValueError):
+        raise SettingsError(f'{where}: {v!r} is not a date like 2026-10-31')
+
+
+def load_prices(path=None):
+    """Read and check prices.json: {model: [(from, until, rates), ...]} sorted by 'from'."""
+    prices = {}
+    for model, periods in su.read_json(path or os.path.join(HERE, 'prices.json')).items():
+        rows = []
+        for i, p in enumerate(periods):
+            where = f'prices.json: {model}[{i}]'
+            missing = [f for f in TOKEN_FIELDS if not isinstance(p.get(f), (int, float)) or p[f] < 0]
+            if missing:
+                raise SettingsError(f'{where}: {", ".join(missing)} must be a number >= 0')
+            lo, hi = _day(p.get('from'), where + '.from'), _day(p.get('until'), where + '.until')
+            if lo and hi and hi <= lo:
+                raise SettingsError(f'{where}: "until" must be after "from"')
+            rows.append((lo, hi, {f: p[f] for f in TOKEN_FIELDS}))
+        rows.sort(key=lambda x: x[0] or dt.datetime.min.replace(tzinfo=UTC))
+        for (lo1, hi1, _), (lo2, _, _) in zip(rows, rows[1:]):
+            if hi1 is None or lo2 is None or lo2 < hi1:
+                raise SettingsError(f'prices.json: {model}: periods overlap; end the older one with "until"')
+        prices[model] = rows
+    return prices
+
+
+def model_key(model, prices):
+    """Price entry for a model name (longest matching prefix), None if there is none."""
+    for k in sorted(prices, key=len, reverse=True):
+        if model.startswith(k):
+            return k
+    return None
+
+
+def price_at(key, t, prices):
+    """Rates in $ per million tokens of a price entry at moment t, None outside every period."""
+    for lo, hi, rates in prices.get(key, ()):
+        if (lo is None or lo <= t) and (hi is None or t < hi):
+            return rates
+    return None
+
+
+def cost(tokens, rates):
+    """$ for a list of token counts in TOKEN_FIELDS order."""
+    return sum(n * rates[f] for n, f in zip(tokens, TOKEN_FIELDS)) / 1e6
 
 
 def model_name(k):
@@ -42,38 +94,38 @@ def new_pc(r):
     return ts(r['data_from']) > ts(r['scanned_at']) - dt.timedelta(days=KEEP_DAYS - NEW_MARGIN_DAYS)
 
 
-def load(settings):
+def load(settings, prices):
     labels = settings['computers']
-    prices, now = settings['prices'], dt.datetime.now(UTC)
+    now = dt.datetime.now(UTC)
     weeks, pcs, first, skipped = {}, [], {}, []
-    for path in sorted(glob.glob(os.path.join(common.HERE, 'data', '*', '*.json'))):
+    for path in sorted(glob.glob(os.path.join(HERE, 'data', '*', '*.json'))):
         with open(path, encoding='utf-8') as fh:
             r = json.load(fh)
-        if r.get('format') != common.FORMAT:
-            skipped.append(os.path.relpath(path, common.HERE))
+        if r.get('format') != su.FORMAT:
+            skipped.append(os.path.relpath(path, HERE))
             continue
         pc = labels.get(r['pc'], r['pc'])
         if pc not in pcs:
             pcs.append(pc)
         start, end = ts(r['week_start']), ts(r['week_end'])
-        k = common.week_key(start, settings)
+        k = su.week_key(start, settings)
         first[pc] = min(first.get(pc, k), k)
         w = weeks.setdefault(k, {'start': start, 'end': end, 'pcs': {}, 'hits': [], 'models': {}, 'unknown': set()})
         p = w['pcs'].setdefault(pc, {**dict.fromkeys(FIELDS, 0), 'hourly': collections.defaultdict(float),
                                      'until': end, 'data_ok': True, 'data_from': None})
         for name, v in r['models'].items():
-            key = common.model_key(name, prices)
+            key = model_key(name, prices)
             p['requests'] += v['requests']
             p['input'] += v['input']
             p['output'] += v['output']
             p['cache_write'] += v['cache_write_5m'] + v['cache_write_1h']
             p['cache_read'] += v['cache_read']
             for h, tokens in v['hourly'].items():
-                rates = common.price_at(key, start + dt.timedelta(hours=int(h)), prices) if key else None
+                rates = price_at(key, start + dt.timedelta(hours=int(h)), prices) if key else None
                 if rates is None:
                     w['unknown'].add(name)
                     continue
-                c = common.cost(tokens, rates)
+                c = cost(tokens, rates)
                 p['hourly'][int(h)] += c
                 p['cost_usd'] += c
                 w['models'][key] = w['models'].get(key, 0) + c
@@ -103,7 +155,7 @@ def merge_hits(hits):
     out = []
     for h in sorted(hits, key=lambda h: h['time']):
         same = next((o for o in out if o['kind'] == h['kind'] and o['text'] == h['text']
-                     and h['time'] - o['time'] < dt.timedelta(hours=5)), None)
+                     and h['time'] - o['time'] < su.HIT_WINDOW), None)
         if same:
             same['pcs'] += [h['pc']] if h['pc'] not in same['pcs'] else []
         else:
@@ -113,7 +165,7 @@ def merge_hits(hits):
 
 def label(w, settings):
     s, e = (x.astimezone(settings['tz']) for x in (w['start'], w['end']))
-    return f'{common.MONTHS[s.month - 1]} {s.day} – {common.MONTHS[e.month - 1]} {e.day}'
+    return f'{su.MONTHS[s.month - 1]} {s.day} – {su.MONTHS[e.month - 1]} {e.day}'
 
 
 def trend(ys):
@@ -145,10 +197,10 @@ def quota(w, total):
 
 def main():
     try:
-        settings = common.load_settings()
-    except common.SettingsError as e:
+        settings, prices = su.load_settings(), load_prices()
+    except SettingsError as e:
         sys.exit(f'Error: {e}')
-    pcs, weeks, skipped = load(settings)
+    pcs, weeks, skipped = load(settings, prices)
     for path in skipped:
         print(f'Warning: {path} has an older format and is skipped; count that week again with scan_usage.py')
     if not weeks:
@@ -163,7 +215,7 @@ def main():
         tot['tokens'] = tot['input'] + tot['output'] + tot['cache_write'] + tot['cache_read']
         checks = []
         for h in w['hits']:
-            r = common.reset_from_text(h['text'], h['time']) if h['kind'] == 'weekly' else None
+            r = su.reset_from_text(h['text'], h['time']) if h['kind'] == 'weekly' else None
             if r and abs(r - w['end']) > dt.timedelta(minutes=30):
                 checks.append(f"Reset per limit message {r:%Y-%m-%d %H:%M} {r.tzinfo} instead of "
                               f"{w['end'].astimezone(r.tzinfo):%Y-%m-%d %H:%M}: check week_reset in settings.json")
@@ -234,12 +286,12 @@ def main():
         'week_reset': settings['reset_text'],
         'built': dt.date.today().isoformat(),
     }
-    with open(os.path.join(common.HERE, 'theme.json'), encoding='utf-8') as fh:
+    with open(os.path.join(HERE, 'theme.json'), encoding='utf-8') as fh:
         theme = fh.read()
-    with open(os.path.join(common.HERE, 'template.html'), encoding='utf-8') as fh:
+    with open(os.path.join(HERE, 'template.html'), encoding='utf-8') as fh:
         html = fh.read()
     html = html.replace('/*THEME*/null', theme).replace('/*DATA*/null', json.dumps(data, ensure_ascii=False))
-    out = os.path.join(common.HERE, 'report.html')
+    out = os.path.join(HERE, 'report.html')
     with open(out, 'w', encoding='utf-8') as fh:
         fh.write(html)
     print(f'{len(rows)} weeks, {len(full)} full, usage $ {data["mean_cost"]:.2f} per week on average (±{data["spread_pct"]} %)')
