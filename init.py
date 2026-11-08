@@ -96,7 +96,7 @@ def first_run():
 
 
 def main():
-    ui.intro('claude-usage-weekly · setup')
+    ui.intro('claude-code-usage-weekly · setup')
     try:
         with open(SETTINGS, encoding='utf-8') as fh:
             settings = json.load(fh)

@@ -1,4 +1,4 @@
-# claude-usage-weekly
+# claude-code-usage-weekly
 
 Is the weekly Claude limit getting smaller? This tool measures how much Claude Code usage your
 weekly limit allows, across all your computers, week after week.
@@ -16,8 +16,8 @@ Everything runs locally with Python 3.9+ and the standard library; nothing is se
 ## Quick start
 
 ```sh
-git clone https://github.com/pascalrrl/claude-usage-weekly.git
-cd claude-usage-weekly
+git clone https://github.com/pascalrrl/claude-code-usage-weekly.git
+cd claude-code-usage-weekly
 python3 init.py
 ```
 
