@@ -35,11 +35,13 @@ shows a menu:
 
 Choose with the arrow keys and Enter. **Count** reads this computer's Claude Code transcripts of the
 last 30 days into `data/<host name>/`. **Build** writes `report.html` from everything in `data/` and
-opens it in your browser. **Settings** shows every setting with its value on one screen –
-the names of the computers and the weekday, time and time zone of the weekly reset – and changes
-the one you choose, without editing any file; the time zone is picked from a list that filters as
-you type. Back (or Esc) leaves Settings. After each of them the screen is cleared and the menu comes back, with
-the result on top, until you choose Quit.
+opens it in your browser. **Settings** shows every setting with its value on one screen – the
+names of the computers and the weekday, time and time zone of the weekly reset – and changes the one
+you choose, without editing any file. A text field starts with the current value, ready to edit;
+the time zone is picked from a list that filters as you type (*"new york"* finds
+`America/New_York`). Back leaves Settings; Esc does too, and while typing it cancels without
+saving. After each of them the screen is cleared and the menu comes back, with the result on top,
+until you choose Quit.
 
 It runs on macOS, Linux and Windows. In the classic Windows console it uses plain symbols; Windows
 Terminal shows the full set. Without a terminal, or with `NO_COLOR` set, it asks plain numbered
@@ -54,8 +56,9 @@ or for more options (see [Every few weeks](#every-few-weeks)).
 ### 1. Keep transcripts for 60 days
 
 Claude Code deletes transcripts after 30 days by default (`cleanupPeriodDays`). Older weeks can
-then no longer be counted. `start.py` shows the current value (in Settings when it is too short); to change it,
-add this to `~/.claude/settings.json` on every computer (Windows: `C:\Users\<you>\.claude\settings.json`):
+then no longer be counted. `start.py` shows the current value after the first start, and in
+Settings as long as it is below 60 days. To change it, add this to `~/.claude/settings.json` on
+every computer (Windows: `C:\Users\<you>\.claude\settings.json`):
 
 ```json
 {
@@ -82,7 +85,8 @@ settings and is not part of the repository (it is in `.gitignore`). You can also
 - **`week_reset`** – when your weekly limit resets; it differs per account. `start.py` reads it from
   the line `/usage` shows in Claude Code (*"Resets Mar 12, 5pm (America/New_York)"*), or asks for
   weekday, time and time zone. `timezone` is an IANA name like `America/New_York` or `Asia/Tokyo`;
-  on Windows, any zone other than `UTC` needs `pip install tzdata`. Use the same reset on every
+  on Windows, any zone other than `UTC` needs `pip install tzdata` (without it, `start.py` has no
+  list of zones and asks for the name instead). Use the same reset on every
   computer. If it does not match the limit messages, the report warns you; week files counted with
   another reset are skipped. Set it before the first count: week files are named and cut by it.
 - **`name`** – the name of this computer in the report. It is saved in every week file this computer
@@ -129,8 +133,8 @@ for everyone and part of the repository:
 Count every computer you use Claude Code on, and build the report on one of them. There are two
 ways to count another computer:
 
-- **Clone this repository there** and run `python3 start.py`: set the same weekly reset and a name,
-  then choose *Count this computer*.
+- **Clone this repository there** and run `python3 start.py`: enter a name and the same weekly
+  reset, then choose *Count this computer*.
 - **Copy only `scan_usage.py` there** – it runs on its own, without the other files – and pass the
   weekly reset and a name:
 
@@ -146,8 +150,8 @@ files, then build there. Copy only a computer's own folder, never a whole `data/
 files of other computers could overwrite newer ones.
 
 The report shows every computer by the name its data carries. To call one differently, rename it on
-the building computer under Settings. Folders with the same name are
-added up. `--pc <folder>` sets the folder name instead of the host name.
+the building computer under Settings. Folders with the same name are added up. `--pc <folder>`
+sets the folder name instead of the host name.
 
 
 ## Every few weeks
@@ -254,8 +258,8 @@ mean, the band and the trend.
 
 All data stays on your computers. `settings.json`, `data/` and `report.html` are listed in
 `.gitignore` – do not commit them: the week files show when and how much you worked, the folder
-names and `computers` are your host names, and `week_reset` is your account's reset time. The report loads the chart library ECharts from the jsDelivr CDN when
-you open it.
+names and `computers` are your host names, and `week_reset` is your account's reset time. The
+report loads the chart library ECharts from the jsDelivr CDN when you open it.
 
 
 ## Files
