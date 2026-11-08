@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude usage per limit week</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --surface:#161b22; --card:#1c2128; --border:#30363d; --t1:#e6edf3; --t2:#8b949e; --t3:#484f58; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--t1); font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:32px 24px 48px; }
+  h1 { font-size:22px; font-weight:600; margin:0 0 4px; }
+  .sub { color:var(--t2); margin:0 0 24px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin-bottom:16px; }
+  .kpi, .card { background:var(--card); border:1px solid var(--border); border-radius:8px; }
+  .kpi { padding:14px 16px; }
+  .kpi .k { color:var(--t2); font-size:12px; }
+  .kpi .v { font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; margin:2px 0; }
+  .kpi .d { color:var(--t2); font-size:12px; }
+  .kpi.warn .v { color:var(--warn); }
+  .card { padding:16px; margin-bottom:16px; }
+  .chart { width:100%; height:340px; }
+  .note { color:var(--t2); font-size:12px; margin:8px 4px 0; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:13px; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--t2); font-weight:500; }
+  td .chg { color:var(--t2); font-size:11px; margin-left:4px; }
+  td.warn { color:var(--warn); }
+  tr.partial td { color:var(--t3); }
+  tr.hint td { text-align:left; white-space:normal; color:var(--t2); font-size:12px; padding-top:0; }
+  tr:has(+ tr.hint) td { border-bottom:none; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <p class="sub" id="subtitle"></p>
+  <div class="kpis" id="kpis"></div>
+  <div class="card"><div class="chart" id="c-quota"></div>
+    <p class="note" id="n-quota"></p></div>
+  <div class="card"><div class="chart" id="c-cost"></div>
+    <p class="note">Dashed: mean of the full weeks. Band: usual spread (largest deviation of a full week from the mean). Faded bars: week only partly counted. ⚑ = weekly limit hit.</p></div>
+  <div class="card"><div class="chart" id="c-models"></div>
+    <p class="note">The API-price equivalent weighs the models by their list prices. How the limit weighs them is unknown: if the mix shifts, the dollar value of the quota can change although Anthropic changed nothing.</p></div>
+  <div class="card"><div class="chart" id="c-index"></div>
+    <p class="note">Index: full weeks average 100. With a constant quota and fully used weeks, the measure that best reflects the limit stays flat. The trend line is a linear regression over the full weeks. Hollow and dotted: the current week, not yet fully counted; it is not part of band and trend, the trend is only extended to it.</p></div>
+  <div class="card scroll"><table id="tbl"></table>
+    <p class="note">Cost: equivalent at API list prices, with the prices in prices.json that were valid in each hour. In small print: change against the week before. Quota: up to the first weekly limit hit; ≥ at least (full week without a limit hit).</p></div>
+</main>
+<script>
+const THEME = /*THEME*/null;
+const DATA = /*DATA*/null;
+echarts.registerTheme('linear-dark', { ...THEME, backgroundColor: 'transparent' });
+
+const nf = (v, d = 0) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const usd = v => '$' + nf(v, 0);
+const mio = v => v >= 1e9 ? nf(v / 1e9, 2) + ' B' : v >= 1e6 ? nf(v / 1e6, v >= 1e8 ? 0 : 1) + ' M' : nf(v / 1e3, 0) + ' k';
+const pct = v => (v > 0 ? '+' : v < 0 ? '−' : '±') + nf(Math.abs(v), 0) + ' %';
+const when = t => new Date(t).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const day = t => new Date(t).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+const rows = DATA.rows, full = rows.filter(r => r.full), labels = rows.map(r => r.label);
+const PC_COLORS = ['#58a6ff', '#56d4dd', '#bc8cff', '#d29922'];
+const lastFull = full[full.length - 1];
+const lastDev = lastFull ? lastFull.index.cost_usd - 100 : 0;
+const inBand = Math.abs(lastDev) <= DATA.spread_pct;
+
+// Quota: weeks with a weekly limit hit, and full weeks without one as a lower bound
+const Q = DATA.quota;
+const byWeek = w => rows.find(r => r.week === w);
+const qText = q => (q.kind === 'min' ? '≥ ' : '') + usd(q.value);
+const ests = rows.filter(r => r.quota && r.quota.kind === 'hit');
+const lastEst = Q.last ? byWeek(Q.last) : null;
+const maxLower = Q.max_lower ? byWeek(Q.max_lower) : null;
+const minEst = ests.length ? Math.min(...ests.map(r => r.quota.value)) : null;
+// A week without a limit hit that used more than a week with one: it cannot have been the same limit
+const conflict = maxLower && minEst != null && maxLower.quota.value > minEst;
+
+document.getElementById('title').textContent = lastEst
+  ? `Weekly quota ≈ ${usd(Q.mean)} API-price equivalent – last measurement ${qText(lastEst.quota)}` +
+    (Q.last_dev_pct != null ? `, ${pct(Q.last_dev_pct)} against the weeks before` : '') +
+    (Q.last_outside == null ? '' : Q.last_outside ? ' – outside the previous spread' : ' – inside the previous spread')
+  : lastFull
+  ? `Usage ≈ ${usd(DATA.mean_cost)} API-price equivalent per week – no weekly limit hit yet`
+  : 'No full week recorded yet';
+document.getElementById('subtitle').textContent =
+  `Claude Code, all computers (${DATA.pcs.map(p => p.name).join(', ')}) · limit weeks start ${DATA.week_reset} · ` +
+  `${rows[0].week} to ${rows[rows.length - 1].week} · ${DATA.n_full} full ${DATA.n_full === 1 ? 'week' : 'weeks'} · built ${DATA.built}`;
+
+const kpi = (k, v, d, warn) => `<div class="kpi${warn ? ' warn' : ''}"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
+document.getElementById('kpis').innerHTML = [
+  kpi('Quota per week (mean)', Q.n ? usd(Q.mean) : '–',
+    Q.n ? `up to the weekly limit · ${Q.n} ${Q.n === 1 ? 'week' : 'weeks'}${Q.n > 1 ? ` · range ±${nf(Q.spread_pct)} %` : ''}` : 'no weekly limit hit yet'),
+  kpi(Q.last_outside ? 'Last measurement – outside the previous spread' : 'Last measurement', lastEst ? qText(lastEst.quota) : '–',
+    lastEst ? (Q.last_dev_pct != null ? `${pct(Q.last_dev_pct)} against the weeks before · ` : '') + `limit hit ${when(lastEst.quota.t)}` : '', Q.last_outside),
+  kpi('Largest week without a limit hit', maxLower ? qText(maxLower.quota) : '–',
+    maxLower ? `${maxLower.label}` + (Q.n ? ` · ${pct(100 * maxLower.quota.value / Q.mean - 100)} against the quota` : '') +
+      (conflict ? ' · more than at a limit hit' : '') : 'every full week ended with a limit hit', conflict),
+  kpi('Usage per week (mean)', usd(DATA.mean_cost),
+    `${DATA.n_full} full ${DATA.n_full === 1 ? 'week' : 'weeks'} · ±${nf(DATA.spread_pct)} % · trend ${pct(DATA.slope_pct)} per week`),
+].join('');
+
+// 1) Quota per week
+const quotaChart = echarts.init(document.getElementById('c-quota'), 'linear-dark');
+// The latest measurement turns amber when it lies outside the spread of the weeks before it,
+// and a triangle does when a week without a limit hit used more than a week with one
+const AMBER = { itemStyle: { color: '#d29922' }, label: { color: '#d29922' } };
+const qPoints = kind => rows.map((r, i) => r.quota && r.quota.kind === kind ? { value: [r.label, r.quota.value], row: i,
+  ...(Q.last_outside && r.week === Q.last ? AMBER : {}),
+  ...(kind === 'min' && minEst != null && r.quota.value > minEst ? { itemStyle: { borderColor: '#d29922' }, label: { color: '#d29922' } } : {}) } : null).filter(Boolean);
+const bandMean = Q.prev_spread_pct != null ? Q.prev_mean : Q.mean;
+const qLabel = x => {
+  const q = rows[x.data.row].quota;
+  return qText(q) + '\n' + (q.kind === 'hit' ? 'limit ' + day(q.t) : 'no limit hit');
+};
+const qVals = ests.map(r => r.quota.value);
+document.getElementById('n-quota').textContent =
+  'After a weekly limit hit no request gets through: the API-price equivalent of all computers up to that moment is the quota. ' +
+  'If it drops, the limit hits at fewer dollars; if it rises, weeks without a limit hit use more than the mean. ' +
+  'Dashed and grey: mean and spread of the weeks before the last measurement (at least ±5 %). If the last measurement lies outside, it is amber. ' +
+  'Usage on claude.ai counts towards the limit but not here: it pushes a point down.';
+quotaChart.setOption({
+  title: {
+    text: !ests.length ? 'No week with a weekly limit hit yet'
+      : (ests.length === 1 ? `The quota was ${qText(ests[0].quota)}`
+        : `The quota was between ${usd(Math.min(...qVals))} and ${usd(Math.max(...qVals))}`) +
+        (conflict ? ` – ${maxLower.label} used ${usd(maxLower.quota.value)} without a limit hit` : ''),
+    subtext: 'API-price equivalent of all computers from the start of the week to the first weekly limit hit, US dollars at list prices',
+  },
+  tooltip: { trigger: 'item', formatter: x => {
+    const r = rows[x.data.row], q = r.quota;
+    const hit = r.hits.find(h => h.kind === 'weekly');
+    return `<b>${r.label}</b><br>Quota: ${qText(q)} (${q.kind === 'hit' ? 'up to the weekly limit' : 'no limit hit, at least'})` +
+      `<br>Usage of the week: ${usd(r.total.cost_usd)}` +
+      (hit ? `<br>Limit hit: ${when(hit.t)} (${esc(hit.pcs.join(', '))})` + (hit.text ? `<br><span style="color:#8b949e">${esc(hit.text)}</span>` : '') : '') +
+      (q.after != null ? `<br>After the limit hit: ${usd(q.after)}` : '') +
+      (r.session_hits ? `<br>Session limit hits: ${r.session_hits}` : ''); } },
+  legend: { bottom: 0, left: 'center' },
+  grid: { left: 64, right: 24, top: 80, bottom: 64 },
+  xAxis: { type: 'category', data: labels },
+  // Points, not bars: the axis starts just below the smallest value, so that changes of 10 % show
+  yAxis: { type: 'value', min: v => Math.floor(v.min * 0.8 / 200) * 200, max: v => Math.ceil(v.max * 1.12 / 200) * 200, interval: 200, name: '$', axisLabel: { formatter: v => nf(v) } },
+  series: [
+    { name: 'up to the weekly limit', type: 'scatter', symbol: 'circle', symbolSize: 13, color: '#e6edf3', data: qPoints('hit'),
+      label: { show: true, position: 'top', color: '#e6edf3', formatter: qLabel },
+      markLine: Q.n ? { silent: true, symbol: 'none', data: [{ yAxis: bandMean }], lineStyle: { color: '#8b949e', type: 'dashed' },
+        label: { formatter: (Q.prev_spread_pct != null ? 'mean before ' : 'mean ') + usd(bandMean), position: 'insideStartTop', color: '#8b949e' } } : undefined,
+      markArea: Q.prev_spread_pct != null ? { silent: true, itemStyle: { color: 'rgba(139,148,158,0.08)' },
+        data: [[{ yAxis: Q.prev_mean * (1 - Q.prev_spread_pct / 100) }, { yAxis: Q.prev_mean * (1 + Q.prev_spread_pct / 100) }]] } : undefined },
+    { name: 'no limit hit (at least)', type: 'scatter', symbol: 'triangle', symbolSize: 13, color: '#8b949e', data: qPoints('min'),
+      itemStyle: { color: 'transparent', borderColor: '#8b949e', borderWidth: 2 },
+      label: { show: true, position: 'top', color: '#8b949e', formatter: qLabel } },
+  ],
+});
+
+// 2) Cost per week, stacked by computer
+const costChart = echarts.init(document.getElementById('c-cost'), 'linear-dark');
+const lo = DATA.mean_cost * (1 - DATA.spread_pct / 100), hi = DATA.mean_cost * (1 + DATA.spread_pct / 100);
+costChart.setOption({
+  title: { text: `Usage per week: ${usd(DATA.mean_cost)} on average, last full week ${pct(lastDev)} (${inBand ? 'inside' : 'outside'} the usual spread)`,
+    subtext: 'API-price equivalent per limit week by computer, US dollars at list prices' },
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: v => '$' + nf(v, 2) },
+  legend: { top: 4, right: 0 },
+  grid: { left: 64, right: 24, top: 72, bottom: 36 },
+  xAxis: { type: 'category', data: labels },
+  yAxis: { type: 'value', min: 0, name: '$', axisLabel: { formatter: v => nf(v) } },
+  series: DATA.pcs.map((p, i) => ({
+    name: p.name, type: 'bar', stack: 'cost', barMaxWidth: 56,
+    itemStyle: { color: PC_COLORS[i % PC_COLORS.length] },
+    data: rows.map(r => ({ value: r.by_pc[p.id], itemStyle: { opacity: r.full ? 1 : 0.35 } })),
+    ...(i === DATA.pcs.length - 1 ? {
+      label: { show: true, position: 'top', color: '#e6edf3', formatter: x => {
+        const r = rows[x.dataIndex]; return usd(r.total.cost_usd) + (r.limit.length ? ' ⚑' : '') + (r.full ? '' : '\npartial'); } },
+      markLine: { silent: true, symbol: 'none', data: [{ yAxis: DATA.mean_cost }],
+        lineStyle: { color: '#8b949e', type: 'dashed' }, label: { formatter: 'mean ' + usd(DATA.mean_cost), position: 'insideStartTop', color: '#8b949e' } },
+      markArea: { silent: true, itemStyle: { color: 'rgba(139,148,158,0.08)' }, data: [[{ yAxis: lo }, { yAxis: hi }]] },
+    } : {}),
+  })),
+});
+
+// 3) Model mix: share of the API-price equivalent
+const modelChart = echarts.init(document.getElementById('c-models'), 'linear-dark');
+const MODEL_COLORS = ['#8b949e', '#7ee787', '#bc8cff', '#d29922', '#56d4dd'];
+const FIXED = { _other: '#f778ba' };
+const topModel = DATA.models[0];
+const topShares = topModel ? full.filter(r => r.models[topModel.id] != null).map(r => r.models[topModel.id]) : [];
+let ci = 0;
+modelChart.setOption({
+  title: { text: topShares.length ? `${topModel.name} accounts for ${nf(Math.min(...topShares))}–${nf(Math.max(...topShares))} % of the API-price equivalent of the full weeks` : 'No cost per model yet',
+    subtext: 'Share per model, all computers · faded: partly counted' },
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: v => nf(v, 1) + ' %' },
+  legend: { top: 4, right: 0 },
+  grid: { left: 48, right: 24, top: 72, bottom: 36 },
+  xAxis: { type: 'category', data: labels },
+  yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: v => nf(v) + ' %' } },
+  series: DATA.models.map(m => ({
+    name: m.name, type: 'bar', stack: 'models', barMaxWidth: 56,
+    itemStyle: { color: FIXED[m.id] || MODEL_COLORS[ci++ % MODEL_COLORS.length] },
+    data: rows.map(r => ({ value: r.models[m.id] || 0, itemStyle: { opacity: r.full ? 1 : 0.35 } })),
+  })),
+});
+
+// 4) Which measure is flat? API-price equivalent vs. tokens, with trend
+const spreadOf = m => Math.max(...full.map(r => Math.abs(r.index[m] - 100)));
+const idxChart = echarts.init(document.getElementById('c-index'), 'linear-dark');
+const idx = m => rows.map(r => r.full ? r.index[m] : null);
+// Current week: hollow and faded, dotted to the last full week before it; not part of band and trend
+const runIdx = rows.findIndex(r => r.running && !r.full && r.index.cost_usd != null);
+const prevFull = runIdx > 0 && rows[runIdx - 1].full ? runIdx - 1 : -1;
+const runSeries = (m, color, withLabel) => runIdx < 0 ? [] : [{
+  name: 'current ' + m, type: 'line', color, symbol: 'emptyCircle', symbolSize: 7, tooltip: { show: false },
+  lineStyle: { type: 'dotted', width: 1.5, opacity: 0.6 }, itemStyle: { opacity: 0.6 },
+  data: rows.map((r, i) => i === runIdx ? r.index[m] : i === prevFull ? { value: r.index[m], symbol: 'none' } : null),
+  label: { show: withLabel, position: 'top', color, opacity: 0.7, formatter: x => x.dataIndex === runIdx ? '≈ ' + nf(x.value, 0) : '' },
+}];
+const idxTip = ps => {
+  const i = ps[0].dataIndex, r = rows[i], shown = r.full || i === runIdx;
+  return `${r.label}${i === runIdx ? ' (current week, not yet fully counted)' : ''}<br>` +
+    (shown ? `API-price equivalent ${nf(r.index.cost_usd, 1)}<br>Total tokens ${nf(r.index.tokens, 1)}` : 'only partly counted') +
+    (r.trend != null ? `<br>Trend ${nf(r.trend, 1)}` : '');
+};
+idxChart.setOption({
+  title: { text: !full.length ? 'No full week for the index yet' : spreadOf('cost_usd') <= spreadOf('tokens')
+      ? `The API-price equivalent varies less (±${nf(spreadOf('cost_usd'))} %) than the plain token count (±${nf(spreadOf('tokens'))} %)`
+      : `The plain token count varies less (±${nf(spreadOf('tokens'))} %) than the API-price equivalent (±${nf(spreadOf('cost_usd'))} %)`, subtext: 'Index of the weekly usage, full weeks average 100' },
+  tooltip: { trigger: 'axis', formatter: idxTip },
+  legend: { top: 4, right: 0, data: ['API-price equivalent', 'Total tokens', 'Trend API-price equivalent'] },
+  grid: { left: 48, right: 24, top: 72, bottom: 36 },
+  xAxis: { type: 'category', data: labels },
+  yAxis: { type: 'value', min: 60, max: 140, axisLabel: { formatter: v => nf(v) } },
+  series: [
+    { name: 'API-price equivalent', type: 'line', data: idx('cost_usd'), color: '#58a6ff', symbolSize: 7, connectNulls: false,
+      label: { show: true, position: 'top', color: '#58a6ff', formatter: x => x.value == null ? '' : nf(x.value, 0) },
+      markArea: { silent: true, itemStyle: { color: 'rgba(139,148,158,0.08)' }, data: [[{ yAxis: 100 - DATA.spread_pct }, { yAxis: 100 + DATA.spread_pct }]] } },
+    { name: 'Total tokens', type: 'line', data: idx('tokens'), color: '#8b949e', symbolSize: 6, lineStyle: { width: 1.5 } },
+    { name: 'Trend API-price equivalent', type: 'line', data: rows.map(r => r.trend), color: '#d29922', symbol: 'none', lineStyle: { type: 'dashed', width: 1.5 } },
+    ...runSeries('cost_usd', '#58a6ff', true),
+    ...runSeries('tokens', '#8b949e', false),
+  ],
+});
+
+// Table
+const cols = [['Requests', 'requests', v => nf(v)], ['Input', 'input', mio], ['Output', 'output', mio], ['Cache write', 'cache_write', mio],
+  ['Cache read', 'cache_read', mio], ['Total tokens', 'tokens', mio], ['API-price equivalent', 'cost_usd', v => '$' + nf(v, 2)]];
+let html = '<tr><th>Limit week</th>' + cols.map(c => `<th>${c[0]}</th>`).join('') + '<th>Quota</th><th>Session limit hits</th></tr>';
+rows.forEach((r, i) => {
+  const p = rows[i - 1];
+  const hints = [
+    ...r.hits.filter(h => h.kind !== 'session').map(h => `${h.kind === 'weekly' ? 'Weekly limit hit' : `Limit hit (${h.kind})`} ${when(h.t)} (${esc(h.pcs.join(', '))})` +
+      (h.kind === 'weekly' && r.quota && r.quota.after >= 1 ? `, ${usd(r.quota.after)} after it` : '')),
+    ...r.notes.map(esc),
+  ];
+  html += `<tr class="${r.full ? '' : 'partial'}"><td>${r.week}</td>` + cols.map(([, m, f]) => {
+    const chg = p && p.total[m] ? `<span class="chg">${pct(100 * (r.total[m] / p.total[m] - 1))}</span>` : '';
+    return `<td>${f(r.total[m])}${chg}</td>`; }).join('') +
+    `<td>${r.quota ? qText(r.quota) : '–'}</td><td>${r.session_hits || '–'}</td></tr>`;
+  if (hints.length || r.checks.length)
+    html += `<tr class="hint ${r.full ? '' : 'partial'}"><td colspan="${cols.length + 3}">${hints.join(' · ')}` +
+      (r.checks.length ? `<br><span style="color:var(--warn)">${r.checks.map(esc).join(' · ')}</span>` : '') + '</td></tr>';
+});
+document.getElementById('tbl').innerHTML = html;
+
+addEventListener('resize', () => [quotaChart, costChart, modelChart, idxChart].forEach(c => c.resize()));
+</script>
+</body>
+</html>

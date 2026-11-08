@@ -1,0 +1,9 @@
+# Your own settings, usage data and computer names stay local
+settings.json
+data/
+report.html
+
+.tmp/
+.DS_Store
+__pycache__/
+*.pyc
