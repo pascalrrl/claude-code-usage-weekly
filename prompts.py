@@ -84,40 +84,62 @@ def _key():
             '\x01': 'home', '\x05': 'end', '\x15': 'clear'}.get(c, c)
 
 
-def _edit(prompt, value):
+def _edit(prompt, value, back=False):
     """A one-line editor that starts with value: arrow keys, Home, End, Backspace, Delete, Ctrl-U;
-    Enter returns the line, Esc raises Back."""
-    buf, pos = list(value), len(value)
-    while True:
-        width = max(10, shutil.get_terminal_size().columns - 6)  # the prompt "│  › " takes 5
-        off = max(0, pos - width)  # a long line scrolls instead of wrapping
-        shown = ''.join(buf[off:off + width])
-        left = len(shown) - (pos - off)
-        _out(f'\r\x1b[K{prompt}{shown}' + (f'\x1b[{left}D' if left else ''))
-        k = _key()
-        if k in ('enter', 'esc'):
-            _out('\n')
-            if k == 'esc':
+    Enter returns the line, Esc raises Back. With back, a button Back sits below it after an empty
+    line, as in select: Down or Tab moves to it, Up or typing goes back to the line, Enter on it
+    raises Back."""
+    buf, pos, on_back = list(value), len(value), False
+
+    def back_row():  # the button two lines down; the cursor returns to the start of the input line
+        _out(f'\x1b[2E\x1b[K{BAR}  ' + (f'{green(ON)} Back' if on_back else dim(f'{OFF} Back')) + '\x1b[2F')
+
+    if back:
+        _out(f'\n{BAR}\n\x1b[2F')  # room for the empty line and the button
+        back_row()
+    try:
+        while True:
+            width = max(10, shutil.get_terminal_size().columns - 6)  # the prompt "│  › " takes 5
+            off = max(0, pos - width)  # a long line scrolls instead of wrapping
+            shown = ''.join(buf[off:off + width])
+            left = 0 if on_back else len(shown) - (pos - off)
+            _out((HIDE if on_back else SHOW) + f'\r\x1b[K{prompt}{shown}' + (f'\x1b[{left}D' if left else ''))
+            k = _key()
+            if k == 'esc' or (k == 'enter' and on_back):
+                _out('\n')
                 raise Back
-            return ''.join(buf).strip()
-        if k == 'left':
-            pos = max(0, pos - 1)
-        elif k == 'right':
-            pos = min(len(buf), pos + 1)
-        elif k == 'home':
-            pos = 0
-        elif k == 'end':
-            pos = len(buf)
-        elif k == 'backspace' and pos:
-            del buf[pos - 1]
-            pos -= 1
-        elif k == 'delete' and pos < len(buf):
-            del buf[pos]
-        elif k == 'clear':
-            buf, pos = [], 0
-        elif len(k) == 1 and k.isprintable():
-            buf.insert(pos, k)
-            pos += 1
+            if k == 'enter':
+                _out('\n')
+                return ''.join(buf).strip()
+            if back and k in ('down', 'up', 'tab'):
+                on_back = not on_back if k == 'tab' else k == 'down'
+                back_row()
+                continue
+            if on_back:  # typing on the button goes back to the line
+                if not (len(k) == 1 and k.isprintable()) and k not in ('backspace', 'delete', 'clear'):
+                    continue
+                on_back = False
+                back_row()
+            if k == 'left':
+                pos = max(0, pos - 1)
+            elif k == 'right':
+                pos = min(len(buf), pos + 1)
+            elif k == 'home':
+                pos = 0
+            elif k == 'end':
+                pos = len(buf)
+            elif k == 'backspace' and pos:
+                del buf[pos - 1]
+                pos -= 1
+            elif k == 'delete' and pos < len(buf):
+                del buf[pos]
+            elif k == 'clear':
+                buf, pos = [], 0
+            elif len(k) == 1 and k.isprintable():
+                buf.insert(pos, k)
+                pos += 1
+    finally:
+        _out(SHOW)
 
 
 def _done(label, value):
@@ -151,9 +173,9 @@ def note(title, lines, warn=False):
     _out(f'{BAR}\n{mark}  {title}\n' + ''.join(f'{BAR}  {dim(x)}\n' for x in lines))
 
 
-def text(label, default=None, hint=None, validate=None, clean=None, empty='–'):
+def text(label, default=None, hint=None, validate=None, clean=None, empty='–', back=False):
     """Free text. In a terminal the default is already typed in and can be edited, Esc raises
-    Back; without one, Enter takes the default. validate(value) returns an error message or None;
+    Back, and with back a button Back below the line does too; without one, Enter takes the default. validate(value) returns an error message or None;
     clean(value) normalizes a valid answer; empty is shown for an empty answer."""
     error, value = None, default or ''
     while True:
@@ -162,7 +184,7 @@ def text(label, default=None, hint=None, validate=None, clean=None, empty='–')
             lines += [f'{BAR}  {yellow(WARN + " " + error)}'] if error else []
             _out('\n'.join(lines) + '\n')
             try:
-                value = _edit(f'{BAR}  {cyan(ARROW)} ', value)
+                value = _edit(f'{BAR}  {cyan(ARROW)} ', value, back)
             finally:
                 _clear(len(lines) + 1)
         else:
@@ -211,15 +233,20 @@ def confirm(label, default=True):
     return value
 
 
-def select(label, options, default=0, hint=None, back=False):
+def select(label, options, default=0, hint=None, back=False, gap=None):
     """One of options, a list of (value, text) or (value, text, detail): arrow keys, then Enter.
-    The details form a second column. With back, a last entry Back (or Esc) returns None."""
+    The details form a second column. With back, a last entry Back (or Esc) returns None. An empty
+    line comes before the option at index gap (with back and no gap: before Back), so that buttons
+    like Back or Done do not look like one more choice."""
     options = list(options) + [(None, 'Back')] * back
+    if gap is None and back:
+        gap = len(options) - 1
     width = max((len(o[1]) for o in options if len(o) > 2), default=0)
     rows = [o[1].ljust(width) + '  ' + o[2] if len(o) > 2 else o[1] for o in options]
     i, n = default, len(options)
+    lines = n + (gap is not None)  # drawn lines of the options
     if not FANCY:
-        _out(f'{label}\n' + ''.join(f'  {j + 1}) {t}\n' for j, t in enumerate(rows)))
+        _out(f'{label}\n' + ''.join(('\n' if j == gap else '') + f'  {j + 1}) {t}\n' for j, t in enumerate(rows)))
         while True:
             answer = input(f'Choose 1–{n} [{default + 1}]: ').strip()
             if not answer:
@@ -230,8 +257,9 @@ def select(label, options, default=0, hint=None, back=False):
     _out(HIDE + '\n'.join(head) + '\n')
     try:
         while True:
-            _out('\n'.join(f'{BAR}  ' + (green(ON) + ' ' + (f'{o[1].ljust(width)}  {dim(o[2])}' if len(o) > 2 else o[1])
-                                         if j == i else dim(f'{OFF} {rows[j]}')) for j, o in enumerate(options)))
+            _out('\n'.join((f'{BAR}\n' if j == gap else '') + f'{BAR}  '
+                            + (green(ON) + ' ' + (f'{o[1].ljust(width)}  {dim(o[2])}' if len(o) > 2 else o[1])
+                               if j == i else dim(f'{OFF} {rows[j]}')) for j, o in enumerate(options)))
             k = _key()
             if k == 'enter':
                 break
@@ -242,10 +270,10 @@ def select(label, options, default=0, hint=None, back=False):
                 i = (i - 1) % n
             elif k in ('down', 'j', 'tab'):
                 i = (i + 1) % n
-            _clear(n - 1)
+            _clear(lines - 1)
     finally:
         _out(SHOW)
-    _clear(n - 1 + len(head))
+    _clear(lines - 1 + len(head))
     if options[i][0] is None:
         return None
     _done(label, options[i][1])
@@ -275,6 +303,7 @@ def search(label, options, hint=None, back=False, rows=8):
             if top or more:
                 lines.append(f'{BAR}  ' + dim(f'{top} above · {more} below'))
             if back:
+                lines.append(BAR)  # Back is a button, not one more choice
                 lines.append(f'{BAR}  ' + (f'{green(ON)} Back' if i == len(matches) else dim(f'{OFF} Back')))
             _clear(drawn - 1) if drawn else None
             _out('\n'.join(lines))

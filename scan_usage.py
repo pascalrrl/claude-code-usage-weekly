@@ -38,6 +38,8 @@ LIMIT_RE = re.compile(r"hit your ([\w ]+?) limit")
 # The same limit message (kind and text) within this time counts once: it appears in several
 # transcripts (session, subagent, parallel sessions) and on several computers
 HIT_WINDOW = dt.timedelta(hours=5)
+# A data folder name: also a valid file name on Windows
+FOLDER_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 
 
 class SettingsError(Exception):
@@ -47,7 +49,9 @@ class SettingsError(Exception):
 # --- Settings and limit weeks (also used by start.py and build_report.py) ---
 
 def default_pc():
-    """Name of this computer and its data folder: the host name."""
+    """The host name: the data folder of a computer without "folder" in settings.json. start.py
+    saves it there at the first start, so that a later change of the host name (macOS renames a
+    computer whose name another device on the network has) does not start a second folder."""
     return socket.gethostname().split('.')[0].lower()
 
 
@@ -116,7 +120,8 @@ def load_settings(path=None, reset=None):
     """Read and check settings.json (your own, not in the repository). reset ({'weekday', 'time',
     'timezone'}, from --reset) replaces its week_reset; with reset, settings.json is optional.
     Returns a dict with 'weekday' (0 = Monday), 'time', 'tz', 'reset_text', 'name' (display name of
-    this computer, or None) and 'computers' (folder name -> display name, overrides)."""
+    this computer, or None), 'folder' (its data folder, or None) and 'computers' (folder name ->
+    display name, overrides)."""
     path = path or os.path.join(HERE, 'settings.json')
     if reset and not os.path.exists(path):
         s = {}
@@ -140,7 +145,11 @@ def load_settings(path=None, reset=None):
     name = s.get('name')
     if name is not None and not (isinstance(name, str) and name.strip()):
         raise SettingsError('settings.json: name must be the display name of this computer')
+    folder = s.get('folder')
+    if folder is not None and not (isinstance(folder, str) and FOLDER_RE.fullmatch(folder)):
+        raise SettingsError('settings.json: folder must be a folder name of letters, digits, ".", "_" and "-"')
     return {'weekday': WEEKDAYS.index(weekday), 'time': clock, 'tz': tz, 'computers': computers, 'name': name,
+            'folder': folder,
             'reset_text': reset_text({'weekday': weekday, 'time': f'{clock:%H:%M}', 'timezone': tz_name})}
 
 
@@ -226,7 +235,11 @@ def scan(files, begin, end, settings):
     """Token counts per week, model and hour; limit messages; the oldest entry of all transcripts."""
     weeks = collections.defaultdict(lambda: collections.defaultdict(
         lambda: {'requests': 0, 'hourly': collections.defaultdict(lambda: [0] * len(TOKEN_FIELDS))}))
-    events, seen, oldest = [], set(), None  # nothing is left before the oldest entry
+    events, oldest = [], None  # nothing is left before the oldest entry
+    # (message id, request id) -> [week start, model, hour, tokens]. A response is written as one
+    # line per content block, each with its usage; a later line can carry more output tokens, so
+    # each count is the largest of its lines.
+    responses = {}
     for f in files:
         scan_file = os.path.getmtime(f) >= begin.timestamp()
         with open(f, encoding='utf-8', errors='ignore') as fh:
@@ -260,10 +273,6 @@ def scan(files, begin, end, settings):
                 u = m.get('usage')
                 if d.get('type') != 'assistant' or not u:
                     continue
-                key = (m.get('id'), d.get('requestId'))
-                if key in seen:
-                    continue
-                seen.add(key)
                 cc = u.get('cache_creation') or {}
                 if cc:
                     cw5 = cc.get('ephemeral_5m_input_tokens', 0) or 0
@@ -272,12 +281,19 @@ def scan(files, begin, end, settings):
                     cw5, cw1h = u.get('cache_creation_input_tokens', 0) or 0, 0
                 tokens = (u.get('input_tokens', 0) or 0, u.get('output_tokens', 0) or 0, cw5, cw1h,
                           u.get('cache_read_input_tokens', 0) or 0)
+                key = (m.get('id'), d.get('requestId'))
+                if key in responses:
+                    r = responses[key]
+                    r[3] = [max(a, b) for a, b in zip(r[3], tokens)]
+                    continue
                 w = week_start(t, settings)
-                rec = weeks[w][m.get('model') or 'unknown']
-                rec['requests'] += 1
-                hour = rec['hourly'][int((t - w).total_seconds() // 3600)]
-                for i, n in enumerate(tokens):
-                    hour[i] += n
+                responses[key] = [w, m.get('model') or 'unknown', int((t - w).total_seconds() // 3600), list(tokens)]
+    for w, model, h, tokens in responses.values():
+        rec = weeks[w][model]
+        rec['requests'] += 1
+        hour = rec['hourly'][h]
+        for i, n in enumerate(tokens):
+            hour[i] += n
     return weeks, dedupe(events), oldest
 
 
@@ -313,8 +329,8 @@ def main():
     ap.add_argument('-t1', '--to', dest='t1', type=date_arg, help='last day, included, YYYY-MM-DD (default: today)')
     ap.add_argument('--reset', type=reset_arg,
                     help='weekly reset, e.g. "thursday 17:00 America/New_York" (default: week_reset in settings.json)')
-    ap.add_argument('--pc', default=default_pc(),
-                    help='data folder of this computer (default: host name, %(default)s)')
+    ap.add_argument('--pc', help=f'data folder of this computer (default: folder in settings.json, else the host name, '
+                                 f'{default_pc()})')
     ap.add_argument('--name', help='display name of this computer in the report, saved in its week files '
                                    '(default: name in settings.json, else the data folder)')
     ap.add_argument('--projects', default=os.path.join(home, '.claude', 'projects'),
@@ -328,6 +344,7 @@ def main():
         if not a.reset and not os.path.exists(os.path.join(HERE, 'settings.json')):
             e = f'{e}, or pass the weekly reset, e.g. --reset "thursday 17:00 America/New_York"'
         sys.exit(f'Error: {e}')
+    a.pc = a.pc or settings['folder'] or default_pc()
     now = dt.datetime.now(UTC)
     t1 = a.t1 or now.date()
     t0 = a.t0 or t1 - dt.timedelta(days=30)

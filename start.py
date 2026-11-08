@@ -10,7 +10,7 @@ build_report.py still run on their own, without questions, e.g. for scheduled ru
 
 Runs on macOS, Linux and Windows with Python 3.9 or newer, standard library only.
 """
-import json, os, pathlib, subprocess, sys, webbrowser
+import json, os, pathlib, re, secrets, subprocess, sys, webbrowser
 
 import build_report
 import prompts as ui
@@ -61,6 +61,51 @@ def screen(title, results=()):
 
 # --- settings.json ---
 
+def folder(settings):
+    """Data folder of this computer: fixed in settings.json, the host name only before that."""
+    return settings.get('folder') or su.default_pc()
+
+
+def new_folder():
+    """A new data folder: the host name and 4 random hex digits, e.g. macbook-pro-7f3e. The random
+    part keeps two computers of the same host name (a new Mac is often just "macbook-pro") out of
+    each other's folder: copied to one computer, one would overwrite the other's week files."""
+    host = re.sub(r'[^a-z0-9._-]+', '-', su.default_pc()).strip('-._') or 'computer'
+    return f'{host}-{secrets.token_hex(2)}'
+
+
+def folders_of(name):
+    """Folders in data/ that may be this computer's: the one of its host name, and those whose week
+    files carry its name."""
+    host = su.default_pc()
+    found = {r['pc'] for _, r in build_report.week_files() if name and r.get('name') == name}
+    if os.path.isdir(os.path.join(su.HERE, 'data', host)):
+        found.add(host)
+    return sorted(f for f in found if su.FOLDER_RE.fullmatch(f))
+
+
+def migrate_folder(settings):
+    """The folder for a settings.json of an older version, which counted into data/<host name>/:
+    that folder if it exists, else the only one whose files carry this computer's name (the host
+    name changed since), else a new one."""
+    host = su.default_pc()
+    if os.path.isdir(os.path.join(su.HERE, 'data', host)):
+        return host
+    mine = [f for f in folders_of(settings.get('name')) if f != host]
+    return mine[0] if len(mine) == 1 else new_folder()
+
+
+def ask_folder(settings):
+    """First start: a new folder, unless data/ already holds one that may be this computer's (e.g.
+    after settings.json was deleted). Then you choose: it may also be a copy from another computer."""
+    new, found = new_folder(), folders_of(settings.get('name'))
+    if not found:
+        return new
+    return ui.select('Data folder of this computer',
+                     [(f, f'data/{f}', 'existing – if this computer counted into it before') for f in found]
+                     + [(new, f'data/{new}', 'new – if the folder above is another computer\'s')])
+
+
 def read_settings():
     try:
         with open(SETTINGS, encoding='utf-8') as fh:
@@ -108,18 +153,14 @@ def tz_error(name):
         return str(e)
 
 
-def ask_paste():
+USAGE_HINT = 'In Claude Code, /usage shows it under the weekly limit, e.g. "Resets Mar 12, 5pm (America/New_York)"'
+
+
+def paste_reset():
     """The weekly reset pasted from /usage; None for an empty answer."""
-    while True:
-        line = ui.text('When does your weekly limit reset?', hint='Paste the reset of the weekly limit from /usage in '
-                       'Claude Code, e.g. "Resets Mar 12, 5pm (America/New_York)" – or press Enter to pick it step by step',
-                       validate=lambda s: None if not s or su.parse_reset(s) else 'Could not read a date, a time and a time zone',
-                       empty='step by step')
-        if not line:
-            return None
-        reset = su.parse_reset(line)
-        if ui.confirm(f'Weekly reset {su.reset_text(reset)} – correct?'):
-            return reset
+    line = ui.text('Paste the reset line from /usage', hint=USAGE_HINT, empty='nothing pasted', back=True,
+                   validate=lambda s: None if not s or su.parse_reset(s) else 'Could not read a date, a time and a time zone in it')
+    return su.parse_reset(line) if line else None
 
 
 def ask_weekday(default='sunday', back=False):
@@ -128,7 +169,7 @@ def ask_weekday(default='sunday', back=False):
 
 
 def ask_time(default=None):
-    return ui.text('Time of the reset (24-hour, HH:MM)', default=default, clean=lambda s: s.zfill(5),
+    return ui.text('Time of the reset (24-hour, HH:MM)', default=default, clean=lambda s: s.zfill(5), back=True,
                    validate=lambda s: None if su.parse_clock(s) else 'Use 24-hour time like 17:00')
 
 
@@ -149,21 +190,62 @@ def ask_timezone(default, back=False):
     """A list to filter by typing; without a terminal or time zone data, the name typed in."""
     zones = zone_names()
     if not ui.FANCY or not zones:
-        return ui.text('Time zone', default=default, hint='IANA name like America/New_York, or UTC', validate=tz_error)
+        return ui.text('Time zone', default=default, hint='IANA name like America/New_York, or UTC', validate=tz_error,
+                       back=back)
     first = list(dict.fromkeys([default, local_tz_name(), 'UTC']))  # the current one, this computer's, UTC
     return ui.search('Time zone', first + [z for z in zones if z not in first], back=back,
                      hint='Type to filter, e.g. "new york" · ↑↓ choose · Enter takes it')
 
 
-def ask_reset():
-    return ask_paste() or {'weekday': ask_weekday(), 'time': ask_time(), 'timezone': ask_timezone(local_tz_name())}
+RESET_FIELDS = ('weekday', 'time', 'timezone')
 
 
-def ask_name(settings):
-    pc = su.default_pc()
-    shown = (settings.get('computers') or {}).get(pc) or settings.get('name') or pc
-    return ui.text('Name of this computer in the report', default=shown,
-                   hint=f'Saved with its data in data/{pc}, so the report shows it on every computer',
+def ask_field(field, r):
+    """One part of the weekly reset r, starting from its current value; None if left with Back."""
+    if field == 'weekday':
+        return ask_weekday(r.get('weekday') or 'monday', back=True)
+    if field == 'time':
+        return ask_time(r.get('time'))
+    return ask_timezone(r.get('timezone') or local_tz_name(), back=True)
+
+
+def ask_reset(results):
+    """First start: the weekly reset on one screen, like Settings – paste the line from /usage, or
+    set weekday, time and time zone one by one; Done takes it and asks for what is still missing."""
+    r, i = {'timezone': local_tz_name()}, 0
+    while True:
+        screen(TITLE, results)
+        missing = [f for f in RESET_FIELDS if not r.get(f)]
+        options = [('paste', 'Paste from /usage', 'sets all three at once'),
+                   ('weekday', 'Weekday', r['weekday'].capitalize() if r.get('weekday') else '–'),
+                   ('time', 'Time', r.get('time') or '–'),
+                   ('timezone', 'Time zone', r.get('timezone') or '–'),
+                   ('done', 'Done', su.reset_text(r) if not missing
+                    else 'asks for the ' + ' and '.join(f.replace('timezone', 'time zone') for f in missing))]
+        choice = ui.select('When does your weekly limit reset?', options, default=i, hint=USAGE_HINT, gap=len(options) - 1)
+        try:
+            if choice == 'paste':
+                r = paste_reset() or r
+            for f in (missing if choice == 'done' else [choice] if choice in RESET_FIELDS else []):
+                value = ask_field(f, r)
+                if not value:
+                    break
+                r[f] = value
+        except ui.Back:  # Esc: back to this screen, nothing lost
+            pass
+        missing = [f for f in RESET_FIELDS if not r.get(f)]
+        if choice == 'done' and not missing:
+            return r
+        # The cursor goes to the next value still missing, else to Done
+        i = 1 + RESET_FIELDS.index(missing[0]) if missing else len(options) - 1
+
+
+def ask_name(settings, back=False):
+    pc = folder(settings)
+    shown = (settings.get('computers') or {}).get(pc) or settings.get('name') or su.default_pc()
+    where = f' in data/{pc}' if settings.get('folder') else ''
+    return ui.text('Name of this computer in the report', default=shown, back=back,
+                   hint=f'Saved with its data{where}, so the report shows it on every computer',
                    validate=lambda s: None if s.strip() else 'Enter a name').strip()
 
 
@@ -181,10 +263,11 @@ def transcript_days():
 def retention_note():
     """Only a hint: this tool does not change Claude Code's own settings."""
     days, path = transcript_days()
-    if days and days >= RETENTION:
+    if days is not None and days >= RETENTION:
         return lambda: ui.note(f'Claude Code keeps transcripts for {days} days',
                                ['Count this computer at least every 4 weeks.'])
-    return lambda: ui.note(f'Claude Code keeps transcripts for {days or 30} days{"" if days else " (default)"}', [
+    shown = f'{days} days' if days is not None else '30 days (default)'
+    return lambda: ui.note(f'Claude Code keeps transcripts for {shown}', [
         f'To keep them for {RETENTION} days, add this line inside the braces of',
         f'{path}:', '', f'    "cleanupPeriodDays": {RETENTION},', '',
         'Until then, count this computer at least every 2 weeks.'], warn=True)
@@ -193,20 +276,22 @@ def retention_note():
 def retention_warning():
     """The retention note, only if transcripts may be deleted before the next count."""
     days, _ = transcript_days()
-    return [] if days and days >= RETENTION else [retention_note()]
+    return [] if days is not None and days >= RETENTION else [retention_note()]
 
 
 def first_setup(settings):
-    screen(TITLE, [lambda: ui.note('First start', ['Two questions – a name for this computer and your weekly',
-                                                   'reset –, then settings.json is written. You can change both',
-                                                   'later under Settings.'])])
+    intro = lambda: ui.note('First start', ['Two questions – a name for this computer and your weekly',
+                                            'reset –, then settings.json is written. You can change both',
+                                            'later under Settings.'])
     while True:
+        screen(TITLE, [intro])
         try:
             settings['name'] = ask_name(settings)
-            settings['week_reset'] = ask_reset()
             break
-        except ui.Back:  # Esc in the first setup starts it again
-            screen(TITLE)
+        except ui.Back:  # Esc: the question again
+            pass
+    settings['week_reset'] = ask_reset([intro, lambda: ui.step('This computer', settings['name'])])
+    settings['folder'] = ask_folder(settings)
     save(settings)
     return [lambda: ui.step('Saved settings.json', f'This computer {settings["name"]}, weekly reset '
                                                    f'{su.reset_text(settings["week_reset"])}'), retention_note()]
@@ -214,16 +299,15 @@ def first_setup(settings):
 
 # --- Settings ---
 
-def own_week_files():
-    """Week files this computer wrote (its folder is named after the host)."""
-    return [(rel, r) for rel, r in build_report.week_files()
-            if r.get('pc') == su.default_pc() and r.get('format') == su.FORMAT]
+def own_week_files(pc):
+    """Week files this computer wrote, in its folder pc."""
+    return [(rel, r) for rel, r in build_report.week_files() if r.get('pc') == pc and r.get('format') == su.FORMAT]
 
 
-def rename_own_files(name):
+def rename_own_files(name, pc):
     """Put the new name into this computer's existing week files."""
     n = 0
-    for rel, r in own_week_files():
+    for rel, r in own_week_files(pc):
         if r.get('name') != name:
             r = {'format': r['format'], 'pc': r['pc'], 'name': name,
                  **{k: v for k, v in r.items() if k not in ('format', 'pc', 'name')}}
@@ -251,7 +335,7 @@ def change_reset(settings, results, ask):
 def change_other(settings, results, pc, from_data):
     """Rename another computer whose data was copied here; the name is kept in settings.json."""
     overrides = settings.get('computers', {})
-    name = ui.text(f'Name of {pc} in the report', default=overrides.get(pc) or from_data[pc],
+    name = ui.text(f'Name of {pc} in the report', default=overrides.get(pc) or from_data[pc], back=True,
                    hint=f'Leave it empty to use the name from its data again: {from_data[pc]}').strip()
     if not name or name == from_data[pc]:
         overrides.pop(pc, None)
@@ -270,7 +354,7 @@ def settings_menu(settings):
     results, last = [], 0
     while True:
         screen('Settings', results + retention_warning())
-        reset, here = settings['week_reset'], su.default_pc()
+        reset, here = settings['week_reset'], folder(settings)
         from_data = build_report.computer_names({}, list(build_report.week_files()))
         overrides = settings.get('computers', {})
         options = [('name', 'This computer', overrides.get(here) or settings.get('name') or here)]
@@ -278,7 +362,8 @@ def settings_menu(settings):
                     for pc in sorted(from_data) if pc != here]
         options += [('weekday', 'Weekday of the reset', reset['weekday'].capitalize()),
                     ('time', 'Time of the reset', reset['time']),
-                    ('timezone', 'Time zone of the reset', reset['timezone'])]
+                    ('timezone', 'Time zone of the reset', reset['timezone']),
+                    ('paste', 'Reset from /usage', 'paste the line to set all three')]
         choice = ui.select('What do you want to change?', options, default=min(last, len(options) - 1), back=True)
         if choice is None:
             return
@@ -291,13 +376,15 @@ def settings_menu(settings):
                 change_reset(settings, results, lambda r: {**r, 'time': ask_time(r['time'])})
             elif choice == 'timezone':
                 change_reset(settings, results, lambda r: (z := ask_timezone(r['timezone'], back=True)) and {**r, 'timezone': z})
+            elif choice == 'paste':
+                change_reset(settings, results, lambda r: paste_reset())
             elif choice == 'name':
-                settings['name'] = ask_name(settings)
+                settings['name'] = ask_name(settings, back=True)
                 overrides.pop(here, None)  # the name in its week files counts again
                 if not overrides:
                     settings.pop('computers', None)
                 save(settings)
-                n = rename_own_files(settings['name'])
+                n = rename_own_files(settings['name'], here)
                 results.append(lambda: ui.step('Saved', f'This computer is shown as {settings["name"]}'
                                                + (f'; {n} week {"file" if n == 1 else "files"} renamed' if n else '')))
             else:
@@ -323,9 +410,9 @@ def summary(lines):
     return out + ([f'{old} week {"file" if old == 1 else "files"} in an older format skipped'] if old else [])
 
 
-def count():
+def count(settings):
     ok, lines = ui.task('Counting the last 30 days', lambda: run('scan_usage.py'))
-    hint = [] if not ok else ['', f'The week files are in data/{su.default_pc()}/. If another computer builds the',
+    hint = [] if not ok else ['', f'The week files are in data/{folder(settings)}/. If another computer builds the',
                               'report, copy this folder there.']
     return [lambda: ui.note('Counted' if ok else 'Counting failed', summary(lines) + hint, warn=not ok)]
 
@@ -344,6 +431,9 @@ def main():
     settings = read_settings()
     settings.pop('last_action', None)  # older versions kept the last menu choice; gone with the next save
     results = first_setup(settings) if not settings.get('week_reset') else []
+    if not settings.get('folder'):  # set up by an older version: fix the folder now
+        settings['folder'] = migrate_folder(settings)
+        save(settings)
     while True:
         screen(TITLE, results)
         action = ui.select('What do you want to do?', ACTIONS)
@@ -355,7 +445,7 @@ def main():
             results = []
             continue
         screen(TITLE)
-        results = count() if action == 'count' else build()
+        results = count(settings) if action == 'count' else build()
 
 
 if __name__ == '__main__':

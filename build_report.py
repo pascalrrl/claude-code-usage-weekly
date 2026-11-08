@@ -13,8 +13,9 @@ that were valid in each hour, so a corrected or added price applies to every wee
 A week is full when every computer counted it from its start to its end. A new computer (see
 new_pc) counts as full with $0 before its first transcript. Only full weeks go into mean, band and
 trend; partly counted weeks are drawn faded. A computer is shown by the name its week files carry
-(set on that computer), unless settings.json overrides it ("computers"); several folders with the
-same name are added up.
+(set on that computer), unless settings.json overrides it ("computers"). Several folders with the
+same name are one computer that wrote into two folders: their weeks are merged, and a week that two of
+them counted is taken once, from the file with more requests.
 """
 import collections, datetime as dt, glob, json, os, re, sys
 
@@ -95,11 +96,55 @@ def new_pc(r):
     return ts(r['data_from']) > ts(r['scanned_at']) - dt.timedelta(days=KEEP_DAYS - NEW_MARGIN_DAYS)
 
 
-def week_files():
-    """(relative path, content) of every week file in data/."""
+def week_files(skipped=None):
+    """(relative path, content) of every week file in data/. A file that cannot be read is left
+    out, with a message in skipped (if given)."""
     for path in sorted(glob.glob(os.path.join(HERE, 'data', '*', '*.json'))):
-        with open(path, encoding='utf-8') as fh:
-            yield os.path.relpath(path, HERE), json.load(fh)
+        rel, why = os.path.relpath(path, HERE), 'not a week file'
+        try:
+            with open(path, encoding='utf-8') as fh:
+                r = json.load(fh)
+        except (OSError, ValueError) as e:
+            r, why = None, str(e)
+        if isinstance(r, dict) and isinstance(r.get('pc'), str):
+            yield rel, r
+        elif skipped is not None:
+            skipped.append(f'{rel} cannot be read and is skipped ({why})')
+
+
+def check(r):
+    """Raise KeyError, TypeError or ValueError unless r is a complete week file of FORMAT."""
+    for k in ('week_start', 'week_end', 'scanned_at', 'counted_until'):
+        ts(r[k])
+    if r['data_from'] is not None:
+        ts(r['data_from'])
+    int(r['requests'])
+    for h in r['limit_hits']:
+        ts(h['t']), str(h['kind']), str(h['text'])
+    for v in r['models'].values():
+        int(v['requests']), [int(v[f]) for f in TOKEN_FIELDS]
+        for h, tokens in v['hourly'].items():
+            if int(h) < 0 or len(tokens) != len(TOKEN_FIELDS):
+                raise ValueError(h)
+
+
+def one_per_week(files, labels, skipped):
+    """One file per computer name and week. Folders with the same name are one computer that wrote
+    into two folders (another host name, --pc): if two of them counted the same week, they read the same transcripts, and added
+    up the week would count twice. The file with more requests stays (on a tie the later count)."""
+    best = {}
+    for rel, r in files:
+        k = (labels.get(r['pc'], r['pc']), r['week_start'])
+        if k in best:
+            o_rel, o = best[k]
+            (keep_rel, keep), drop_rel = (((rel, r), o_rel) if (r['requests'], r['scanned_at']) > (o['requests'], o['scanned_at'])
+                                          else ((o_rel, o), rel))
+            skipped.append(f'{drop_rel} and {keep_rel} both count the same week of {k[0]}; only {keep_rel} is used. '
+                           'Delete the other one, or give the two computers different names if they are not one')
+            best[k] = (keep_rel, keep)
+        else:
+            best[k] = (rel, r)
+    return sorted(best.values(), key=lambda x: x[0])
 
 
 def computer_names(settings, files):
@@ -107,8 +152,9 @@ def computer_names(settings, files):
     the most recently scanned week file of the folder, else the folder name."""
     latest = {}
     for _, r in files:
-        if r.get('format') == su.FORMAT and r.get('name') and r['scanned_at'] >= latest.get(r['pc'], ('',))[0]:
-            latest[r['pc']] = (r['scanned_at'], r['name'])
+        scanned = str(r.get('scanned_at', ''))
+        if r.get('format') == su.FORMAT and r.get('name') and scanned >= latest.get(r['pc'], ('',))[0]:
+            latest[r['pc']] = (scanned, r['name'])
     folders = {r['pc'] for _, r in files if 'pc' in r}
     overrides = settings.get('computers') or {}
     return {pc: overrides.get(pc) or latest.get(pc, (None, pc))[1] for pc in folders}
@@ -116,12 +162,15 @@ def computer_names(settings, files):
 
 def load(settings, prices):
     now = dt.datetime.now(UTC)
-    files = list(week_files())
-    labels = computer_names(settings, files)
-    weeks, pcs, first, skipped = {}, [], {}, []
-    for rel, r in files:
+    skipped, files = [], []
+    for rel, r in week_files(skipped):
         if r.get('format') != su.FORMAT:
             skipped.append(f'{rel} has an older format and is skipped; count that week again with scan_usage.py')
+            continue
+        try:
+            check(r)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            skipped.append(f'{rel} is damaged and is skipped; count that week again with scan_usage.py')
             continue
         start, end = ts(r['week_start']), ts(r['week_end'])
         # A file counted with another weekly reset (e.g. --reset on another computer) cuts the weeks
@@ -130,6 +179,11 @@ def load(settings, prices):
             skipped.append(f'{rel} was counted with another weekly reset (week from {r["week_start"]}) and is '
                            f'skipped; count it again with the reset {settings["reset_text"]}')
             continue
+        files.append((rel, r))
+    labels = computer_names(settings, files)
+    weeks, pcs, first = {}, [], {}
+    for rel, r in one_per_week(files, labels, skipped):
+        start, end = ts(r['week_start']), ts(r['week_end'])
         pc = labels.get(r['pc'], r['pc'])
         if pc not in pcs:
             pcs.append(pc)
@@ -191,6 +245,11 @@ def merge_hits(hits):
 def label(w, settings):
     s, e = (x.astimezone(settings['tz']) for x in (w['start'], w['end']))
     return f'{su.MONTHS[s.month - 1]} {s.day} – {su.MONTHS[e.month - 1]} {e.day}'
+
+
+def dev(v, base):
+    """Deviation of v from base in percent; 0 without a base."""
+    return 100 * v / base - 100 if base else 0.0
 
 
 def trend(ys):
@@ -276,26 +335,29 @@ def main():
     mean = {m: sum(r['total'][m] for r in full) / len(full) for m in metrics} if full else {}
     for r in rows:
         r['index'] = {m: round(100 * r['total'][m] / mean[m], 1) if mean.get(m) else None for m in metrics}
-    # Trend over full weeks only, as an index (mean = 100), per week in percent
-    slope, icpt = trend([r['index']['cost_usd'] for r in full])
-    pos = {r['week']: i for i, r in enumerate(full)}
+    # Trend over full weeks only, as an index (mean = 100), per week in percent. Without a mean
+    # (every full week at $0, e.g. only models without a price) there is no index and no trend.
+    scored = full if mean.get('cost_usd') else []
+    slope, icpt = trend([r['index']['cost_usd'] for r in scored])
+    pos = {r['week']: i for i, r in enumerate(scored)}
     # The current week right after the last full one: trend extended, not part of it
-    if full and rows[-1]['running'] and not rows[-1]['full'] and len(rows) >= 2 and rows[-2] is full[-1]:
-        pos[rows[-1]['week']] = len(full)
+    if scored and rows[-1]['running'] and not rows[-1]['full'] and len(rows) >= 2 and rows[-2] is scored[-1]:
+        pos[rows[-1]['week']] = len(scored)
     for r in rows:
         r['trend'] = round(icpt + slope * pos[r['week']], 1) if r['week'] in pos else None
-    spread = max(abs(r['index']['cost_usd'] - 100) for r in full) if full else 0
+    spread = max(abs(r['index']['cost_usd'] - 100) for r in scored) if scored else 0
     # Quota: mean, band and trend over the weeks with a weekly-limit message
     est = [r for r in rows if r['quota'] and r['quota']['kind'] == 'hit']
     q_mean = sum(r['quota']['value'] for r in est) / len(est) if est else 0
-    q_spread = max(abs(100 * r['quota']['value'] / q_mean - 100) for r in est) if est else 0
-    q_slope, _ = trend([100 * r['quota']['value'] / q_mean for r in est]) if est else (0, 0)
+    q_spread = max(abs(dev(r['quota']['value'], q_mean)) for r in est) if est else 0
+    q_slope, _ = trend([dev(r['quota']['value'], q_mean) + 100 for r in est]) if q_mean else (0, 0)
     prev = est[:-1]
     prev_mean = sum(r['quota']['value'] for r in prev) / len(prev) if prev else 0
     # Band of the weeks before the last measurement, at least ±5 %: only against it can the latest
     # week fall outside (a band over all weeks contains every week)
-    prev_spread = max(5, *(abs(100 * r['quota']['value'] / prev_mean - 100) for r in prev)) if len(prev) >= 2 else None
-    last_dev = round(100 * est[-1]['quota']['value'] / prev_mean - 100, 1) if prev else None
+    prev_spread = (max(5, *(abs(dev(r['quota']['value'], prev_mean)) for r in prev))
+                   if len(prev) >= 2 and prev_mean else None)
+    last_dev = round(dev(est[-1]['quota']['value'], prev_mean), 1) if prev_mean else None
     lower = [r for r in rows if r['quota'] and r['quota']['kind'] == 'min']
     data = {
         'pcs': [{'id': pc, 'name': pc} for pc in pcs], 'rows': rows,
@@ -317,7 +379,7 @@ def main():
         theme = fh.read()
     with open(os.path.join(HERE, 'template.html'), encoding='utf-8') as fh:
         html = fh.read()
-    html = html.replace('/*THEME*/null', theme).replace('/*DATA*/null', json.dumps(data, ensure_ascii=False))
+    html = html.replace('/*THEME*/null', theme).replace('/*DATA*/null', json.dumps(data, ensure_ascii=False).replace('</', '<\\/'))
     out = os.path.join(HERE, 'report.html')
     with open(out, 'w', encoding='utf-8') as fh:
         fh.write(html)
@@ -330,7 +392,7 @@ def main():
         for c in r['checks']:
             print(f"  {r['week']}  Warning: {c}")
     if est:
-        if prev_spread:
+        if prev_spread and last_dev is not None:
             print(f"Last measurement {last_dev:+.1f} % against the weeks before, "
                   f"{'OUTSIDE' if abs(last_dev) > prev_spread else 'inside'} their spread (±{prev_spread:.1f} %)")
         print(f'Quota $ {q_mean:.2f} on average over {len(est)} {"week" if len(est) == 1 else "weeks"}, range ±{q_spread:.1f} %')

@@ -34,7 +34,7 @@ shows a menu:
 ```
 
 Choose with the arrow keys and Enter. **Count** reads this computer's Claude Code transcripts of the
-last 30 days into `data/<host name>/`. **Build** writes `report.html` from everything in `data/` and
+last 30 days into `data/<folder>/` (see `folder` below). **Build** writes `report.html` from everything in `data/` and
 opens it in your browser. **Settings** shows every setting with its value on one screen – the
 names of the computers and the weekday, time and time zone of the weekly reset – and changes the one
 you choose, without editing any file. A text field starts with the current value, ready to edit;
@@ -78,20 +78,29 @@ settings and is not part of the repository (it is in `.gitignore`). You can also
 {
   "week_reset": { "weekday": "thursday", "time": "17:00", "timezone": "America/New_York" },
   "name": "Laptop",
+  "folder": "laptop-7f3e",
   "computers": { "desktop-abc123": "Desktop" }
 }
 ```
 
-- **`week_reset`** – when your weekly limit resets; it differs per account. `start.py` reads it from
-  the line `/usage` shows in Claude Code (*"Resets Mar 12, 5pm (America/New_York)"*), or asks for
-  weekday, time and time zone. `timezone` is an IANA name like `America/New_York` or `Asia/Tokyo`;
+- **`week_reset`** – when your weekly limit resets; it differs per account. At the first start and
+  under Settings, `start.py` shows weekday, time and time zone on one screen: paste the line
+  `/usage` shows in Claude Code (*"Resets Mar 12, 5pm (America/New_York)"*) to set all three, or
+  set each one; the time zone starts as this computer's. `timezone` is an IANA name like `America/New_York` or `Asia/Tokyo`;
   on Windows, any zone other than `UTC` needs `pip install tzdata` (without it, `start.py` has no
   list of zones and asks for the name instead). Use the same reset on every
   computer. If it does not match the limit messages, the report warns you; week files counted with
   another reset are skipped. Set it before the first count: week files are named and cut by it.
 - **`name`** – the name of this computer in the report. It is saved in every week file this computer
-  writes, so the report shows it wherever the data is copied. Without it, the folder name (the
-  host name) is shown.
+  writes, so the report shows it wherever the data is copied. Without it, the folder name is shown.
+- **`folder`** – the data folder of this computer in `data/`. `start.py` sets it once, at the first
+  start, to the host name and four random characters (`laptop-7f3e`), and never changes it. If
+  the host name changes later (macOS renames a computer when another device on the network has its
+  name), the data stays in the same folder; and two computers of the same host name (a new Mac is
+  often just `macbook-pro`) do not write into one folder. If `data/` already holds a folder that
+  may be this computer's, the first start asks whether to use it. A `settings.json` of an older
+  version keeps its folder `data/<host name>/`. Renaming the computer under Settings changes `name`, not the folder. Without
+  `folder`, `scan_usage.py` uses the host name.
 - **`computers`** (optional) – names that override the name a computer's data carries, by data
   folder. Set them under Settings, where every computer whose data is in `data/` has a line.
 
@@ -144,14 +153,16 @@ ways to count another computer:
 
   `--reset` also takes the line `/usage` shows (*"Resets Mar 12, 5pm (America/New_York)"*).
 
-Each computer writes its own folder `data/<host name>/`. To build one report for all of them, copy
+Each computer writes its own folder `data/<folder>/`. To build one report for all of them, copy
 each computer's own folder into `data/` on the computer that builds the report, replacing existing
 files, then build there. Copy only a computer's own folder, never a whole `data/` folder: older
 files of other computers could overwrite newer ones.
 
 The report shows every computer by the name its data carries. To call one differently, rename it on
-the building computer under Settings. Folders with the same name are added up. `--pc <folder>`
-sets the folder name instead of the host name.
+the building computer under Settings. Folders with the same name count as one computer that wrote
+into two folders (e.g. under another host name before `folder` was set): their weeks are merged, and a week that two of them counted is taken once, from the
+file with more requests (the report warns about it). `--pc <folder>` sets the folder for one run
+instead of `folder` in `settings.json`.
 
 
 ## Every few weeks
@@ -172,7 +183,7 @@ python3 build_report.py
 | `-t1 YYYY-MM-DD` | last day, included (default: today) |
 | `--reset "thursday 17:00 America/New_York"` | weekly reset (default: `week_reset` in `settings.json`) |
 | `--name NAME` | name of this computer in the report (default: `name` in `settings.json`, else the folder) |
-| `--pc FOLDER` | data folder of this computer (default: host name) |
+| `--pc FOLDER` | data folder of this computer (default: `folder` in `settings.json`, else the host name) |
 | `--projects PATH` | Claude Code transcripts (default: `~/.claude/projects`) |
 | `--force` | replace week files even if the new count finds less |
 
@@ -259,7 +270,8 @@ mean, the band and the trend.
 All data stays on your computers. `settings.json`, `data/` and `report.html` are listed in
 `.gitignore` – do not commit them: the week files show when and how much you worked, the folder
 names and `computers` are your host names, and `week_reset` is your account's reset time. The
-report loads the chart library ECharts from the jsDelivr CDN when you open it.
+report loads the chart library ECharts from the jsDelivr CDN when you open it, checked against
+a fixed hash; offline the charts stay empty and the table still works.
 
 
 ## Files

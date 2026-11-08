@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude usage per limit week</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js" integrity="sha384-pPi0zxBAoDu6+JXW/C68UZLvBUUtU+7zonhif43rqj7pxsGyqyqzcian2Rj37Rss" crossorigin="anonymous"></script>
 <style>
   :root { --bg:#0d1117; --surface:#161b22; --card:#1c2128; --border:#30363d; --t1:#e6edf3; --t2:#8b949e; --t3:#484f58; --warn:#d29922; }
   * { box-sizing: border-box; }
@@ -51,6 +51,12 @@
     <p class="note">Cost: equivalent at API list prices, with the prices in prices.json that were valid in each hour. In small print: change against the week before. Quota: up to the first weekly limit hit; ≥ at least (full week without a limit hit).</p></div>
 </main>
 <script>
+if (typeof echarts === 'undefined') {
+  // Offline, or the CDN is blocked: the table still works, the charts stay empty
+  document.querySelector('main').insertAdjacentHTML('afterbegin', '<p class="sub" style="color:var(--warn)">' +
+    'The charts need ECharts from cdn.jsdelivr.net, which did not load (offline?). The table below works without it.</p>');
+  window.echarts = { registerTheme() {}, init: () => ({ setOption() {}, resize() {} }) };
+}
 const THEME = /*THEME*/null;
 const DATA = /*DATA*/null;
 echarts.registerTheme('linear-dark', { ...THEME, backgroundColor: 'transparent' });
@@ -63,10 +69,10 @@ const when = t => new Date(t).toLocaleString('en-US', { weekday: 'short', month:
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const day = t => new Date(t).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 const rows = DATA.rows, full = rows.filter(r => r.full), labels = rows.map(r => r.label);
-const PC_COLORS = ['#58a6ff', '#56d4dd', '#bc8cff', '#d29922'];
+const PC_COLORS = ['#58a6ff', '#56d4dd', '#bc8cff', '#d29922', '#7ee787', '#f778ba'];
 const lastFull = full[full.length - 1];
-const lastDev = lastFull ? lastFull.index.cost_usd - 100 : 0;
-const inBand = Math.abs(lastDev) <= DATA.spread_pct;
+const lastDev = lastFull && lastFull.index.cost_usd != null ? lastFull.index.cost_usd - 100 : null;
+const inBand = lastDev != null && Math.abs(lastDev) <= DATA.spread_pct;
 
 // Quota: weeks with a weekly limit hit, and full weeks without one as a lower bound
 const Q = DATA.quota;
@@ -97,7 +103,7 @@ document.getElementById('kpis').innerHTML = [
   kpi(Q.last_outside ? 'Last measurement – outside the previous spread' : 'Last measurement', lastEst ? qText(lastEst.quota) : '–',
     lastEst ? (Q.last_dev_pct != null ? `${pct(Q.last_dev_pct)} against the weeks before · ` : '') + `limit hit ${when(lastEst.quota.t)}` : '', Q.last_outside),
   kpi('Largest week without a limit hit', maxLower ? qText(maxLower.quota) : '–',
-    maxLower ? `${maxLower.label}` + (Q.n ? ` · ${pct(100 * maxLower.quota.value / Q.mean - 100)} against the quota` : '') +
+    maxLower ? `${maxLower.label}` + (Q.n && Q.mean ? ` · ${pct(100 * maxLower.quota.value / Q.mean - 100)} against the quota` : '') +
       (conflict ? ' · more than at a limit hit' : '') : 'every full week ended with a limit hit', conflict),
   kpi('Usage per week (mean)', usd(DATA.mean_cost),
     `${DATA.n_full} full ${DATA.n_full === 1 ? 'week' : 'weeks'} · ±${nf(DATA.spread_pct)} % · trend ${pct(DATA.slope_pct)} per week`),
@@ -160,7 +166,8 @@ quotaChart.setOption({
 const costChart = echarts.init(document.getElementById('c-cost'), 'linear-dark');
 const lo = DATA.mean_cost * (1 - DATA.spread_pct / 100), hi = DATA.mean_cost * (1 + DATA.spread_pct / 100);
 costChart.setOption({
-  title: { text: `Usage per week: ${usd(DATA.mean_cost)} on average, last full week ${pct(lastDev)} (${inBand ? 'inside' : 'outside'} the usual spread)`,
+  title: { text: !full.length ? 'Usage per week: no full week yet'
+      : `Usage per week: ${usd(DATA.mean_cost)} on average` + (lastDev != null ? `, last full week ${pct(lastDev)} (${inBand ? 'inside' : 'outside'} the usual spread)` : ''),
     subtext: 'API-price equivalent per limit week by computer, US dollars at list prices' },
   tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: v => '$' + nf(v, 2) },
   legend: { top: 4, right: 0 },
@@ -204,7 +211,7 @@ modelChart.setOption({
 });
 
 // 4) Which measure is flat? API-price equivalent vs. tokens, with trend
-const spreadOf = m => Math.max(...full.map(r => Math.abs(r.index[m] - 100)));
+const spreadOf = m => Math.max(...full.filter(r => r.index[m] != null).map(r => Math.abs(r.index[m] - 100)));
 const idxChart = echarts.init(document.getElementById('c-index'), 'linear-dark');
 const idx = m => rows.map(r => r.full ? r.index[m] : null);
 // Current week: hollow and faded, dotted to the last full week before it; not part of band and trend
@@ -223,14 +230,15 @@ const idxTip = ps => {
     (r.trend != null ? `<br>Trend ${nf(r.trend, 1)}` : '');
 };
 idxChart.setOption({
-  title: { text: !full.length ? 'No full week for the index yet' : spreadOf('cost_usd') <= spreadOf('tokens')
+  title: { text: !full.length || lastDev == null ? 'No full week for the index yet' : spreadOf('cost_usd') <= spreadOf('tokens')
       ? `The API-price equivalent varies less (±${nf(spreadOf('cost_usd'))} %) than the plain token count (±${nf(spreadOf('tokens'))} %)`
       : `The plain token count varies less (±${nf(spreadOf('tokens'))} %) than the API-price equivalent (±${nf(spreadOf('cost_usd'))} %)`, subtext: 'Index of the weekly usage, full weeks average 100' },
   tooltip: { trigger: 'axis', formatter: idxTip },
   legend: { top: 4, right: 0, data: ['API-price equivalent', 'Total tokens', 'Trend API-price equivalent'] },
   grid: { left: 48, right: 24, top: 72, bottom: 36 },
   xAxis: { type: 'category', data: labels },
-  yAxis: { type: 'value', min: 60, max: 140, axisLabel: { formatter: v => nf(v) } },
+  yAxis: { type: 'value', min: v => Math.min(60, Math.floor(v.min / 20) * 20), max: v => Math.max(140, Math.ceil(v.max / 20) * 20),
+    axisLabel: { formatter: v => nf(v) } },
   series: [
     { name: 'API-price equivalent', type: 'line', data: idx('cost_usd'), color: '#58a6ff', symbolSize: 7, connectNulls: false,
       label: { show: true, position: 'top', color: '#58a6ff', formatter: x => x.value == null ? '' : nf(x.value, 0) },
