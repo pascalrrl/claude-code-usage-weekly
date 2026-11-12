@@ -3,8 +3,6 @@
 Is your weekly Claude limit getting smaller? This tool measures how much Claude Code usage your
 weekly limit allows – in dollars at API list prices, across all your computers, week after week.
 
-> Unofficial. Not affiliated with or endorsed by Anthropic.
-
 Claude Code keeps a transcript of every session on your computer. The tool reads them and prices
 every request at the API list prices: the **API-price equivalent**. What you used from the start of
 a limit week up to the message *"You've hit your weekly limit"* is the size of your weekly quota.
@@ -244,4 +242,4 @@ fixed hash; offline the charts stay empty and the table still works.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) · Developed with AI assistance.
