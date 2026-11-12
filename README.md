@@ -141,8 +141,11 @@ The API list prices per model, in dollars per million tokens. It is part of the 
 ]
 ```
 
-- A model matches the longest entry its name starts with: `claude-haiku-4-5-20251001` uses
-  `claude-haiku-4-5`.
+- A model matches the entry of the same name, also with a date appended: `claude-haiku-4-5-20251001`
+  uses `claude-haiku-4-5`. A new model never takes an older one's price: `claude-fable-5-3` does not
+  use `claude-fable-5` but is reported as without a price.
+- Claude Haiku 5.5 costs more for a prompt over 100,000 tokens (all input tokens, cache included).
+  Such requests are counted as `claude-haiku-5-5+long`, priced by their own entry.
 - When a price changes, end the old entry with `until` and add a new one with `from` (both
   `YYYY-MM-DD`, UTC; `null` means open-ended):
 
@@ -202,6 +205,8 @@ old file if the new count finds less – its transcripts were partly deleted in 
 - `scan_usage.py` reads `~/.claude/projects/**/*.jsonl` and counts every response once (by message
   and request id). It sums input, output, cache-write (5 min and 1 h) and cache-read tokens per
   model and per hour of the limit week, and keeps the limit messages with their time and text.
+  Requests in fast mode (`/fast`) are left out: they are paid from usage credits and do not count
+  towards the plan's limits.
 - Each week goes into `data/<folder>/<start date>.json`, with the time of the count and the oldest
   transcript entry found.
 - `build_report.py` merges all computers, prices the tokens with `prices.json` and writes

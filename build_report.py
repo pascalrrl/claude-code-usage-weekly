@@ -60,11 +60,17 @@ def load_prices(path=None):
 
 
 def model_key(model, prices):
-    """Price entry for a model name (longest matching prefix), None if there is none."""
-    for k in sorted(prices, key=len, reverse=True):
-        if model.startswith(k):
-            return k
-    return None
+    """Price entry for a model name: the entry of the same name, also with a date appended
+    (claude-haiku-4-5-20251001 -> claude-haiku-4-5); None if there is none. A newer model never
+    falls back to an older one's price (claude-fable-5-3 does not use claude-fable-5)."""
+    base, long = (model[:-len(su.LONG_SUFFIX)], su.LONG_SUFFIX) if model.endswith(su.LONG_SUFFIX) else (model, '')
+    base = re.sub(r'-\d{8}$', '', base)
+    return base + long if base + long in prices else None
+
+
+def family(key):
+    """The model a price entry belongs to: claude-haiku-5-5+long -> claude-haiku-5-5."""
+    return key[:-len(su.LONG_SUFFIX)] if key.endswith(su.LONG_SUFFIX) else key
 
 
 def price_at(key, t, prices):
@@ -207,7 +213,7 @@ def load(settings, prices):
                 c = cost(tokens, rates)
                 p['hourly'][int(h)] += c
                 p['cost_usd'] += c
-                w['models'][key] = w['models'].get(key, 0) + c
+                w['models'][family(key)] = w['models'].get(family(key), 0) + c
         p['until'] = min(p['until'], ts(r['counted_until']))
         # Before its first transcript a new computer did not run: those weeks are full, with $0
         if not new_pc(r) and not (r['data_from'] and ts(r['data_from']) <= start):

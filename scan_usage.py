@@ -38,6 +38,11 @@ LIMIT_RE = re.compile(r"hit your ([\w ]+?) limit")
 # The same limit message (kind and text) within this time counts once: it appears in several
 # transcripts (session, subagent, parallel sessions) and on several computers
 HIT_WINDOW = dt.timedelta(hours=5)
+# Models priced higher for a long prompt (all input tokens of a request, cache reads and writes
+# included): such requests are counted under the model name with LONG_SUFFIX, which prices.json
+# prices on its own
+LONG_PROMPT = {'claude-haiku-5-5': 100_000}
+LONG_SUFFIX = '+long'
 # A data folder name: also a valid file name on Windows
 FOLDER_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
 
@@ -271,7 +276,8 @@ def scan(files, begin, end, settings):
                         events.append((t, hit[1].strip().lower(), text.strip()))
                     continue
                 u = m.get('usage')
-                if d.get('type') != 'assistant' or not u:
+                # Fast mode is paid from usage credits and does not count towards the plan's limits
+                if d.get('type') != 'assistant' or not u or u.get('speed') == 'fast':
                     continue
                 cc = u.get('cache_creation') or {}
                 if cc:
@@ -289,6 +295,9 @@ def scan(files, begin, end, settings):
                 w = week_start(t, settings)
                 responses[key] = [w, m.get('model') or 'unknown', int((t - w).total_seconds() // 3600), list(tokens)]
     for w, model, h, tokens in responses.values():
+        prompt = tokens[0] + sum(tokens[2:])  # input, cache writes and cache reads
+        if any(prompt > n and (model == k or model.startswith(k + '-')) for k, n in LONG_PROMPT.items()):
+            model += LONG_SUFFIX
         rec = weeks[w][model]
         rec['requests'] += 1
         hour = rec['hourly'][h]
