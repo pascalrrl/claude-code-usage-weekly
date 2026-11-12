@@ -42,7 +42,8 @@
     {"from": null, "until": null, "input": 15, "output": 75, "cache_write_5m": 18.75, "cache_write_1h": 30, "cache_read": 1.5}
   ],
   "claude-sonnet-5-5": [
-    {"from": null, "until": null, "input": 2, "output": 10, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.1}
+    {"from": null, "until": "2026-10-07", "input": 2, "output": 10, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.2},
+    {"from": "2026-10-07", "until": null, "input": 2, "output": 10, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.1}
   ],
   "claude-sonnet-5": [
     {"from": null, "until": null, "input": 2, "output": 10, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.2}
